@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>表格标注工具</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/handsontable.full.min.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">表格标注工具</div>
+        <div class="nav-actions">
+            <button id="selectDirBtn" class="btn btn-primary">选择目录</button>
+            <div class="save-wrapper">
+                <button id="saveBtn" class="btn btn-success" disabled>保存</button>
+                <span id="saveStatus" class="save-status"></span>
+            </div>
+            <div class="nav-separator"></div>
+            <button id="prevBtn" class="btn btn-secondary" disabled>上一张</button>
+            <span id="imageCounter" class="counter">0 / 0</span>
+            <button id="nextBtn" class="btn btn-secondary" disabled>下一张</button>
+            <div class="nav-separator"></div>
+            <div class="goto-input">
+                <span>跳转到</span>
+                <input type="number" id="gotoInput" min="1" placeholder="序号" disabled>
+                <button id="gotoBtn" class="btn btn-small btn-secondary" disabled>跳转</button>
+            </div>
+        </div>
+    </nav>
+
+    <div id="directoryModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>选择目录</h2>
+                <span class="close">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="path-input">
+                    <input type="text" id="pathInput" placeholder="输入或选择目录路径">
+                    <button id="goPathBtn" class="btn btn-small">前往</button>
+                </div>
+                <div class="breadcrumb" id="breadcrumb"></div>
+                <div class="directory-list" id="directoryList"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="confirmDirBtn" class="btn btn-primary" disabled>确认选择</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <div class="image-panel">
+            <div class="panel-header">
+                <div class="panel-header-left">
+                    <h3>表格图片</h3>
+                    <span id="imageStatus" class="image-status status-unannotated">未标注</span>
+                </div>
+                <div class="panel-header-right">
+                    <button id="formatErrorBtn" class="btn btn-small btn-warning" disabled title="标记为版式错误">
+                        ❌ 版式错误
+                    </button>
+                    <button id="showRelativeImageBtn" class="btn btn-small btn-info" disabled title="显示相对路径图片">
+                        📷 查看原始图片
+                    </button>
+                    <span id="imageName" class="image-name"></span>
+                </div>
+            </div>
+            <div class="image-container">
+                <img id="tableImage" src="" alt="表格图片">
+                <div id="noImagePlaceholder" class="placeholder">
+                    <p>请先选择包含表格图片的目录</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="editor-panel">
+            <div class="panel-header">
+                <h3>标注编辑</h3>
+                <div class="editor-actions">
+                    <button id="mergeBtn" class="btn btn-small" disabled>合并单元格</button>
+                    <button id="unmergeBtn" class="btn btn-small" disabled>取消合并</button>
+                </div>
+            </div>
+            <div class="tables-wrapper">
+                <div class="table-section" id="table-section-1">
+                    <div class="table-header" onclick="toggleTable(1)">
+                        <label class="table-select" onclick="event.stopPropagation()">
+                            <input type="radio" name="tableSelect" value="1" checked>
+                            <span>表格 1</span>
+                        </label>
+                        <span class="collapse-icon">▼</span>
+                    </div>
+                    <div id="handsontable-container-1" class="handsontable-container"></div>
+                </div>
+                <div class="table-section collapsed" id="table-section-2">
+                    <div class="table-header" onclick="toggleTable(2)">
+                        <label class="table-select" onclick="event.stopPropagation()">
+                            <input type="radio" name="tableSelect" value="2">
+                            <span>表格 2</span>
+                        </label>
+                        <span class="collapse-icon">▶</span>
+                    </div>
+                    <div id="handsontable-container-2" class="handsontable-container"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="floatingImageModal" class="floating-image-modal">
+        <div class="floating-image-content">
+            <div class="floating-image-header">
+                <span id="floatingImageTitle">相对路径图片</span>
+                <button class="floating-close-btn" onclick="closeFloatingImage()">&times;</button>
+            </div>
+            <div class="floating-image-body">
+                <img id="floatingImage" src="" alt="相对路径图片">
+                <div id="floatingImageLoading" class="floating-loading">加载中...</div>
+                <div id="floatingImageError" class="floating-error" style="display: none;">图片加载失败</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/handsontable.full.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
