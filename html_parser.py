@@ -9,7 +9,10 @@ class HTMLTableParser:
     def parse(self, html_file):
         with open(html_file, 'r', encoding='utf-8') as f:
             content = f.read()
-        
+
+        return self.parse_content(content)
+
+    def parse_content(self, content):
         soup = BeautifulSoup(content, 'lxml')
         tables = soup.find_all('table')
         

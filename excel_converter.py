@@ -50,6 +50,11 @@ class ExcelConverter:
         wb.save(output_path)
     
     def save_html(self, table_data, output_path):
+        html = self.to_html(table_data)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(html)
+
+    def to_html(self, table_data):
         data = table_data.get('data', [])
         merge_cells = table_data.get('mergeCells', [])
         
@@ -91,5 +96,4 @@ class ExcelConverter:
         
         # html_lines.extend(['</table>', '</body>', '</html>'])
         html_lines.append('</table>')
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(html_lines))
+        return '\n'.join(html_lines)

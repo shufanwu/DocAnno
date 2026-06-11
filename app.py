@@ -24,26 +24,123 @@ def allowed_file(filename):
 
 
 def get_image_files(directory):
+    image_dir = Path(directory)/'image'
     files = []
-    for f in Path(directory).rglob('*'):
+    for f in image_dir.rglob('*'):
         if f.suffix.lower() in ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'):
             files.append(str(f))
     return sorted(files)
 
 
-def get_html_files(image_file):
-    image_file = Path(image_file)
-    html_1_path = image_file.with_suffix('.md')
-    html_2_path = image_file.with_suffix('.md1')
+def get_label_path(image_path):
+    """获取图片对应的标签文件路径"""
+    image_path = Path(image_path)
+    relative_path = image_path.relative_to(current_directory+'/image') if current_directory else image_path.name
+    label_path = Path(current_directory)/'label'/ relative_path.with_suffix('.json')
+    return str(label_path)
+
+
+def get_current_label():
+    """获取当前图片的标签数据"""
+    global current_directory, image_files, current_index
     
-    result = {'html1': None, 'html2': None}
+    if not image_files:
+        return None
     
-    if os.path.exists(html_1_path):
-        result['html1'] = html_1_path
-    if os.path.exists(html_2_path):
-        result['html2'] = html_2_path
+    image_path = image_files[current_index]
+    label_path = get_label_path(image_path)
+    print(label_path)
+    if os.path.exists(label_path):
+        with open(label_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            return convert_to_new_format(data)
+    return None
+
+
+def get_label_for_image(image_path):
+    label_path = get_label_path(image_path)
+    if not os.path.exists(label_path):
+        return {'boxes': []}
+
+    with open(label_path, 'r', encoding='utf-8') as f:
+        return convert_to_new_format(json.load(f))
+
+
+def get_invalid_image_indices():
+    indices = []
+    for index, image_path in enumerate(image_files):
+        label_data = get_label_for_image(image_path)
+        if any(box.get('block_valid') is False for box in label_data.get('boxes', [])):
+            indices.append(index)
+    return indices
+
+
+def convert_to_new_format(data):
+    """将旧格式标签数据转换为新格式"""
+    if isinstance(data, dict) and 'boxes' in data:
+        return data
     
-    return result
+    boxes = []
+    if 'parsing_res_list' in data and isinstance(data['parsing_res_list'], list):
+        for item in data['parsing_res_list']:
+            if isinstance(item, dict):
+                bbox = item.get('block_bbox', [0, 0, 100, 50])
+                x = bbox[0]
+                y = bbox[1]
+                width = bbox[2] - x
+                height = bbox[3] - y
+                box = {
+                    'x': x,
+                    'y': y,
+                    'width': width if width > 0 else 100,
+                    'height': height if height > 0 else 50,
+                    'category': item.get('block_label', 'text'),
+                    'content': item.get('block_content', ''),
+                    'block_order': item.get('block_order'),
+                    'points': item.get('block_polygon_points', []),
+                    'block_id': item.get('block_id', -1),
+                    'block_valid': item.get('block_valid', True)
+                }
+                boxes.append(box)
+    else:
+        for key, value in data.items():
+            if isinstance(value, dict):
+                box = {
+                    'x': value.get('x', 0),
+                    'y': value.get('y', 0),
+                    'width': value.get('width', 100),
+                    'height': value.get('height', 50),
+                    'category': value.get('type', 'text'),
+                    'content': value.get('text', value.get('text_list', [''])[0] if value.get('text_list') else ''),
+                    'block_order': value.get('block_order', value.get('readingOrder')),
+                    'block_id': value.get('block_id'),
+                    'block_valid': value.get('block_valid', True),
+                    'score_list': value.get('score_list', []),
+                    'match_idx': value.get('match_idx', -1)
+                }
+                boxes.append(box)
+    
+    return {'boxes': boxes}
+
+
+def save_label(label_data):
+    """保存标签数据"""
+    global current_directory, image_files, current_index
+    
+    if not image_files:
+        return False
+    
+    image_path = image_files[current_index]
+    label_path = get_label_path(image_path)
+    
+    try:
+        os.makedirs(os.path.dirname(label_path), exist_ok=True)
+        with open(label_path, 'w', encoding='utf-8') as f:
+            json.dump(label_data, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"Save label error: {e}")
+        return False
 
 
 @app.route('/')
@@ -85,31 +182,10 @@ def get_current_image():
     image_path = image_files[current_index]
     image_file = Path(image_path).name
     relative_path = str(Path(image_path).relative_to(current_directory)) if current_directory else image_file
-    html_files = get_html_files(image_path)
-    table_data_1 = None
-    table_data_2 = None
     
-    parser = HTMLTableParser()
-    
-    if html_files['html1']:
-        try:
-            table_data_1 = parser.parse(html_files['html1'])
-        except Exception as e:
-            table_data_1 = {'error': str(e)}
-    
-    if html_files['html2']:
-        try:
-            table_data_2 = parser.parse(html_files['html2'])
-        except Exception as e:
-            table_data_2 = {'error': str(e)}
-    
-    annotated_flag = Path(image_path).with_suffix('.annotated.flag')
-    format_error_flag = Path(image_path).with_suffix('.format_error.flag')
-    status = 'unannotated'
-    if format_error_flag.exists():
-        status = 'format_error'
-    elif annotated_flag.exists():
-        status = 'annotated'
+    label_data = get_current_label()
+    if label_data is None:
+        label_data = {'boxes': []}
     
     return jsonify({
         'imageName': image_file,
@@ -117,9 +193,16 @@ def get_current_image():
         'relativePath': relative_path,
         'currentIndex': current_index,
         'total': len(image_files),
-        'tableData1': table_data_1,
-        'tableData2': table_data_2,
-        'status': status
+        'labelData': label_data
+    })
+
+
+@app.route('/api/image_statuses', methods=['GET'])
+def image_statuses():
+    return jsonify({
+        'currentIndex': current_index,
+        'total': len(image_files),
+        'invalidIndices': get_invalid_image_indices()
     })
 
 
@@ -196,58 +279,46 @@ def goto_image():
     return jsonify({'error': 'Invalid index'}), 400
 
 
-@app.route('/api/save', methods=['POST'])
-def save():
+@app.route('/api/save_label', methods=['POST'])
+def save_label_api():
     global current_directory, image_files, current_index
     
     data = request.get_json()
-    table_data = data.get('tableData')
+    label_data = data.get('labelData')
     
     if not image_files:
         return jsonify({'error': 'No images loaded'}), 404
     
-    image_file = image_files[current_index]
-    
     try:
-        converter = ExcelConverter()
-        html_path = str(Path(image_file).with_suffix('.md'))
-        converter.save_html(table_data, html_path)
-        
-        annotated_flag = Path(image_file).with_suffix('.annotated.flag')
-        annotated_flag.touch()
-        
-        # format_error_flag = Path(image_file).with_suffix('.format_error.flag')
-        # if format_error_flag.exists():
-        #     format_error_flag.unlink()
-        
-        return jsonify({
-            'success': True,
-            'htmlPath': html_path
-        })
+        success = save_label(label_data)
+        if success:
+            return jsonify({'success': True})
+        else:
+            return jsonify({'error': 'Failed to save label'}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/mark_format_error', methods=['POST'])
-def mark_format_error():
-    global current_directory, image_files, current_index
-    
-    if not image_files:
-        return jsonify({'error': 'No images loaded'}), 404
-    
-    image_file = image_files[current_index]
-    format_error_flag = Path(image_file).with_suffix('.format_error.flag')
-    print(format_error_flag)
+@app.route('/api/table/parse', methods=['POST'])
+def parse_table_content():
+    data = request.get_json() or {}
+    content = data.get('content', '')
+
     try:
-        format_error_flag.touch()
-        
-        annotated_flag = Path(image_file).with_suffix('.annotated.flag')
-        if annotated_flag.exists():
-            annotated_flag.unlink()
-        
-        return jsonify({'success': True})
+        return jsonify(HTMLTableParser().parse_content(content))
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/table/serialize', methods=['POST'])
+def serialize_table_content():
+    data = request.get_json() or {}
+    table_data = data.get('tableData', {})
+
+    try:
+        return jsonify({'content': ExcelConverter().to_html(table_data)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
 
 
 @app.route('/api/list_directories', methods=['GET'])

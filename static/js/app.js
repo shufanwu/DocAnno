@@ -1,28 +1,122 @@
-let hot1 = null;
-let hot2 = null;
-let currentPath = '';
-let selectedDirectory = '';
-let currentTableData1 = null;
-let currentTableData2 = null;
-let savedSelection1 = null;
-let savedSelection2 = null;
-let selectedTable = 1;
-let isLoading = false;
-let currentRelativePath = '';
+let currentDirectory = '';
+let imageFiles = [];
+let currentIndex = 0;
 let totalImages = 0;
+let invalidImageIndices = [];
+let invalidImagesOnly = false;
+let labelData = { boxes: [] };
+let selectedBoxIndex = -1;
+let currentTool = 'select';
+let zoomLevel = 100;
+let isDrawing = false;
+let drawStart = null;
+let history = [];
+let historyIndex = -1;
+let boxesRenderFrame = null;
+let overlayResizeObserver = null;
+let draftBox = null;
+let polygonPoints = [];
+let polygonPointer = null;
+let boxInteraction = null;
+let labelsVisible = false;
+let tableEditor = null;
+let tableEditorSelection = null;
+let tableEditorLoading = false;
+let tableLoadToken = 0;
+let invalidOnly = false;
 
 const API_BASE = '/api';
 
+const categoryColors = {
+    text: '#4a69bd',
+    formula: '#e53935',
+    table: '#4caf50',
+    image: '#ff9800'
+};
+
 document.addEventListener('DOMContentLoaded', function() {
-    initHandsontable();
     initEventListeners();
+    initOverlayResizeObserver();
+    try {
+        initTableEditor();
+    } catch (error) {
+        console.error('Failed to initialize table editor:', error);
+    }
 });
 
-function initHandsontable() {
-    const container1 = document.getElementById('handsontable-container-1');
-    const container2 = document.getElementById('handsontable-container-2');
+function scheduleRenderBoxes() {
+    if (boxesRenderFrame !== null) return;
+
+    boxesRenderFrame = requestAnimationFrame(() => {
+        boxesRenderFrame = null;
+        renderBoxes();
+    });
+}
+
+function initOverlayResizeObserver() {
+    const container = document.getElementById('imageContainer');
+    const img = document.getElementById('documentImage');
+
+    if (window.ResizeObserver) {
+        overlayResizeObserver = new ResizeObserver(scheduleRenderBoxes);
+        overlayResizeObserver.observe(container);
+        overlayResizeObserver.observe(img);
+    }
+
+    window.addEventListener('resize', scheduleRenderBoxes);
+}
+
+function initEventListeners() {
+    document.getElementById('changeDirBtn').addEventListener('click', openDirectoryModal);
+    document.getElementById('selectMoveBtn').addEventListener('click', () => setTool('select'));
+    document.getElementById('rectBoxBtn').addEventListener('click', () => setTool('rectBox'));
+    document.getElementById('polygonBtn').addEventListener('click', () => setTool('polygon'));
+    document.getElementById('toggleLabelsBtn').addEventListener('click', toggleLabels);
+    document.getElementById('invalidOnlyBtn').addEventListener('click', toggleInvalidOnly);
+    document.getElementById('deleteBoxBtn').addEventListener('click', deleteSelectedBox);
+    document.getElementById('undoBtn').addEventListener('click', undo);
+    document.getElementById('redoBtn').addEventListener('click', redo);
+    document.getElementById('zoomInBtn').addEventListener('click', () => zoom(10));
+    document.getElementById('zoomOutBtn').addEventListener('click', () => zoom(-10));
+    document.getElementById('fitWindowBtn').addEventListener('click', fitWindow);
+    document.getElementById('firstImageBtn').addEventListener('click', firstImage);
+    document.getElementById('prevImageBtn').addEventListener('click', prevImage);
+    document.getElementById('nextImageBtn').addEventListener('click', nextImage);
+    document.getElementById('lastImageBtn').addEventListener('click', lastImage);
+    document.getElementById('invalidImagesOnlyBtn').addEventListener('click', toggleInvalidImagesOnly);
+    document.getElementById('prevBoxBtn').addEventListener('click', prevBox);
+    document.getElementById('nextBoxBtn').addEventListener('click', nextBox);
+    document.getElementById('closePanelBtn').addEventListener('click', closePanel);
+    document.getElementById('deleteThisBoxBtn').addEventListener('click', deleteSelectedBox);
+    document.getElementById('copyContentBtn').addEventListener('click', copyContent);
+    document.getElementById('saveChangesBtn').addEventListener('click', saveChanges);
+    document.getElementById('categorySelect').addEventListener('change', onCategoryChange);
+    document.getElementById('blockIdInput').addEventListener('change', onBlockIdChange);
+    document.getElementById('mergeTableCellsBtn').addEventListener('click', mergeTableCells);
+    document.getElementById('unmergeTableCellsBtn').addEventListener('click', unmergeTableCells);
+    document.getElementById('contentTextarea').addEventListener('input', onContentChange);
+    document.getElementById('contentTextarea').addEventListener('keydown', onContentKeydown);
     
-    const commonOptions = {
+    document.querySelector('.close').addEventListener('click', closeDirectoryModal);
+    document.getElementById('confirmDirBtn').addEventListener('click', confirmDirectory);
+    document.getElementById('goPathBtn').addEventListener('click', goToPath);
+    
+    document.getElementById('pathInput').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') goToPath();
+    });
+    
+    document.getElementById('imageContainer').addEventListener('mousedown', onImageMouseDown);
+    document.addEventListener('mousemove', onImageMouseMove);
+    document.getElementById('imageContainer').addEventListener('dblclick', onImageDoubleClick);
+    document.addEventListener('mouseup', onImageMouseUp);
+    document.addEventListener('keydown', onDocumentKeydown);
+    
+    initResizer();
+}
+
+function initTableEditor() {
+    const container = document.getElementById('tableEditorContainer');
+    tableEditor = new Handsontable(container, {
         data: [[]],
         rowHeaders: true,
         colHeaders: true,
@@ -34,125 +128,185 @@ function initHandsontable() {
         width: '100%',
         height: '100%',
         stretchH: 'all',
-        className: 'htCenter htMiddle'
-    };
-    
-    hot1 = new Handsontable(container1, {
-        ...commonOptions,
-        afterChange: function(changes, source) {
-            if (source !== 'loadData' && !isLoading) {
-                selectTable(1);
-            }
-        },
-        afterSelectionEnd: function(r, c, r2, c2) {
-            if (!isLoading) {
-                savedSelection1 = {
-                    from: { row: Math.min(r, r2), col: Math.min(c, c2) },
-                    to: { row: Math.max(r, r2), col: Math.max(c, c2) }
-                };
-                selectTable(1);
-            }
-        }
-    });
-    
-    hot2 = new Handsontable(container2, {
-        ...commonOptions,
-        afterChange: function(changes, source) {
-            if (source !== 'loadData' && !isLoading) {
-                selectTable(2);
-            }
-        },
-        afterSelectionEnd: function(r, c, r2, c2) {
-            if (!isLoading) {
-                savedSelection2 = {
-                    from: { row: Math.min(r, r2), col: Math.min(c, c2) },
-                    to: { row: Math.max(r, r2), col: Math.max(c, c2) }
-                };
-                selectTable(2);
-            }
+        className: 'htCenter htMiddle',
+        afterSelectionEnd(r, c, r2, c2) {
+            if (tableEditorLoading) return;
+            tableEditorSelection = {
+                from: { row: Math.min(r, r2), col: Math.min(c, c2) },
+                to: { row: Math.max(r, r2), col: Math.max(c, c2) }
+            };
         }
     });
 }
 
-function selectTable(tableNum) {
-    selectedTable = tableNum;
-    const radios = document.querySelectorAll('input[name="tableSelect"]');
-    radios.forEach(radio => {
-        radio.checked = (parseInt(radio.value) === tableNum);
+function initResizer() {
+    const resizer = document.getElementById('resizer');
+    const leftPanel = document.getElementById('leftPanel');
+    const rightPanel = document.getElementById('rightPanel');
+    let isResizing = false;
+    
+    resizer.addEventListener('mousedown', function(e) {
+        isResizing = true;
+        document.addEventListener('mousemove', onResize);
+        document.addEventListener('mouseup', stopResize);
+        e.preventDefault();
     });
-}
-
-function toggleTable(tableNum) {
-    const section1 = document.getElementById('table-section-1');
-    const section2 = document.getElementById('table-section-2');
     
-    const currentSection = tableNum === 1 ? section1 : section2;
-    const otherSection = tableNum === 1 ? section2 : section1;
-    const otherTableNum = tableNum === 1 ? 2 : 1;
-    
-    if (currentSection.classList.contains('collapsed')) {
-        currentSection.classList.remove('collapsed');
-        otherSection.classList.add('collapsed');
-        selectTable(tableNum);
-    } else {
-        currentSection.classList.add('collapsed');
-        otherSection.classList.remove('collapsed');
-        selectTable(otherTableNum);
+    function onResize(e) {
+        if (!isResizing) return;
+        
+        const containerRect = document.querySelector('.main-container').getBoundingClientRect();
+        const leftWidth = e.clientX - containerRect.left;
+        const containerWidth = containerRect.width;
+        const rightWidth = containerWidth - leftWidth - 6;
+        
+        if (leftWidth > 100 && rightWidth > 100) {
+            leftPanel.style.flex = 'none';
+            leftPanel.style.width = leftWidth + 'px';
+            rightPanel.style.width = rightWidth + 'px';
+        }
     }
     
-    setTimeout(() => {
-        if (!section1.classList.contains('collapsed')) {
-            hot1.render();
-        }
-        if (!section2.classList.contains('collapsed')) {
-            hot2.render();
-        }
-    }, 350);
+    function stopResize() {
+        isResizing = false;
+        document.removeEventListener('mousemove', onResize);
+        document.removeEventListener('mouseup', stopResize);
+        renderBoxes();
+    }
 }
 
-function initEventListeners() {
-    document.getElementById('selectDirBtn').addEventListener('click', openDirectoryModal);
-    document.getElementById('saveBtn').addEventListener('click', saveTable);
-    document.getElementById('prevBtn').addEventListener('click', () => prevImage());
-    document.getElementById('nextBtn').addEventListener('click', () => nextImage());
-    document.getElementById('mergeBtn').addEventListener('click', mergeCells);
-    document.getElementById('unmergeBtn').addEventListener('click', unmergeCells);
-    document.getElementById('showRelativeImageBtn').addEventListener('click', showFloatingImage);
-    document.getElementById('formatErrorBtn').addEventListener('click', markFormatError);
-    document.getElementById('gotoBtn').addEventListener('click', () => gotoImage());
+function setTool(tool) {
+    cancelDrawing();
+    currentTool = tool;
     
-    document.querySelector('.close').addEventListener('click', closeDirectoryModal);
-    document.getElementById('confirmDirBtn').addEventListener('click', confirmDirectory);
-    document.getElementById('goPathBtn').addEventListener('click', goToPath);
+    document.querySelectorAll('#selectMoveBtn, #rectBoxBtn, #polygonBtn')
+        .forEach(btn => btn.classList.remove('active'));
     
-    document.getElementById('pathInput').addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') {
-            goToPath();
-        }
-    });
+    switch(tool) {
+        case 'select':
+            document.getElementById('selectMoveBtn').classList.add('active');
+            break;
+        case 'rectBox':
+            document.getElementById('rectBoxBtn').classList.add('active');
+            break;
+        case 'polygon':
+            document.getElementById('polygonBtn').classList.add('active');
+            break;
+    }
     
-    document.getElementById('gotoInput').addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') {
-            gotoImage();
-        }
-    });
-    
-    window.addEventListener('click', function(e) {
-        const modal = document.getElementById('directoryModal');
-        if (e.target === modal) {
-            closeDirectoryModal();
-        }
-        
-        const floatingModal = document.getElementById('floatingImageModal');
-        if (e.target === floatingModal) {
-            closeFloatingImage();
-        }
-    });
-    
-    document.querySelectorAll('input[name="tableSelect"]').forEach(radio => {
-        radio.addEventListener('change', function() {
-            selectedTable = parseInt(this.value);
+    const container = document.getElementById('imageContainer');
+    if (tool === 'rectBox' || tool === 'polygon') {
+        container.style.cursor = 'crosshair';
+    } else {
+        container.style.cursor = 'default';
+    }
+}
+
+function cancelDrawing() {
+    isDrawing = false;
+    drawStart = null;
+    draftBox = null;
+    polygonPoints = [];
+    polygonPointer = null;
+    boxInteraction = null;
+    scheduleRenderBoxes();
+}
+
+function toggleLabels() {
+    labelsVisible = !labelsVisible;
+    const button = document.getElementById('toggleLabelsBtn');
+    const label = button.querySelector('.tool-label');
+    button.classList.toggle('active', labelsVisible);
+    button.title = labelsVisible ? '隐藏标签' : '显示标签';
+    label.textContent = labelsVisible ? '隐藏标签' : '显示标签';
+    renderBoxes();
+}
+
+async function toggleInvalidOnly() {
+    if (selectedBoxIndex >= 0 && !await syncTableEditorContent()) return;
+
+    invalidOnly = !invalidOnly;
+    const button = document.getElementById('invalidOnlyBtn');
+    button.classList.toggle('active', invalidOnly);
+    button.title = invalidOnly ? '显示全部框' : '仅显示无效框';
+    button.querySelector('.tool-label').textContent = invalidOnly ? '显示全部框' : '仅无效框';
+
+    if (!getVisibleBoxIndices().includes(selectedBoxIndex)) {
+        selectedBoxIndex = -1;
+        document.getElementById('noBoxSelected').style.display = 'flex';
+        document.getElementById('boxDetails').style.display = 'none';
+        document.getElementById('rightPanel').classList.remove('expanded', 'table-mode');
+    }
+    renderBoxes();
+    updateBoxCounter();
+}
+
+function getVisibleBoxIndices() {
+    return labelData.boxes.reduce((indices, box, index) => {
+        if (!invalidOnly || box.block_valid === false) indices.push(index);
+        return indices;
+    }, []);
+}
+
+function getBoxId(box) {
+    const value = box.block_id;
+    return value === null || value === undefined || value === '' ? null : value;
+}
+
+function getNextBlockId() {
+    const ids = labelData.boxes
+        .map(getBoxId)
+        .filter(value => value !== null && Number.isFinite(Number(value)))
+        .map(Number);
+    return ids.length > 0 ? Math.max(...ids) + 1 : 0;
+}
+
+function moveBlockId(boxIndex, requestedId) {
+    const box = labelData.boxes[boxIndex];
+    const oldValue = getBoxId(box);
+    const oldId = oldValue === null ? Number.NaN : Number(oldValue);
+    const maxId = Math.max(0, labelData.boxes.length - 1);
+    const newId = Math.max(0, Math.min(maxId, requestedId));
+
+    if (!Number.isFinite(oldId)) {
+        labelData.boxes.forEach((item, index) => {
+            const value = getBoxId(item);
+            const id = value === null ? Number.NaN : Number(value);
+            if (index !== boxIndex && Number.isFinite(id) && id >= newId) {
+                item.block_id = id + 1;
+            }
         });
+    } else if (newId < oldId) {
+        labelData.boxes.forEach((item, index) => {
+            const value = getBoxId(item);
+            const id = value === null ? Number.NaN : Number(value);
+            if (index !== boxIndex && id >= newId && id < oldId) {
+                item.block_id = id + 1;
+            }
+        });
+    } else if (newId > oldId) {
+        labelData.boxes.forEach((item, index) => {
+            const value = getBoxId(item);
+            const id = value === null ? Number.NaN : Number(value);
+            if (index !== boxIndex && id > oldId && id <= newId) {
+                item.block_id = id - 1;
+            }
+        });
+    }
+
+    box.block_id = newId;
+    return newId;
+}
+
+function closeBlockIdGap(deletedId) {
+    if (!Number.isFinite(deletedId)) return;
+
+    labelData.boxes.forEach(box => {
+        const value = getBoxId(box);
+        const id = value === null ? Number.NaN : Number(value);
+        if (Number.isFinite(id) && id > deletedId) {
+            box.block_id = id - 1;
+        }
     });
 }
 
@@ -166,13 +320,9 @@ function closeDirectoryModal() {
 }
 
 function loadDirectoryContents(path) {
-    currentPath = path;
-    
     fetch(`${API_BASE}/list_directory_contents`, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: path })
     })
     .then(response => response.json())
@@ -181,7 +331,6 @@ function loadDirectoryContents(path) {
             alert('错误: ' + data.error);
             return;
         }
-        
         updateBreadcrumb(data.currentPath);
         renderDirectoryList(data.items);
     })
@@ -224,11 +373,9 @@ function renderDirectoryList(items) {
 }
 
 function selectDirectory(item) {
-    document.querySelectorAll('.directory-item').forEach(el => {
-        el.classList.remove('selected');
-    });
+    document.querySelectorAll('.directory-item').forEach(el => el.classList.remove('selected'));
     event.currentTarget.classList.add('selected');
-    selectedDirectory = item.path;
+    currentDirectory = item.path;
     document.getElementById('confirmDirBtn').disabled = false;
     document.getElementById('pathInput').value = item.path;
 }
@@ -237,23 +384,21 @@ function goToPath() {
     const path = document.getElementById('pathInput').value.trim();
     if (path) {
         loadDirectoryContents(path);
-        selectedDirectory = path;
+        currentDirectory = path;
         document.getElementById('confirmDirBtn').disabled = false;
     }
 }
 
 function confirmDirectory() {
-    if (!selectedDirectory) {
+    if (!currentDirectory) {
         alert('请选择一个目录');
         return;
     }
     
     fetch(`${API_BASE}/set_directory`, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ directory: selectedDirectory })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ directory: currentDirectory })
     })
     .then(response => response.json())
     .then(data => {
@@ -263,25 +408,15 @@ function confirmDirectory() {
         }
         
         closeDirectoryModal();
-        enableControls();
-        loadCurrentImage();
+        document.getElementById('currentDir').textContent = currentDirectory;
+        imageFiles = [];
+        currentIndex = 0;
+        refreshImageStatuses().then(loadCurrentImage);
     })
     .catch(error => {
         console.error('Error:', error);
         alert('设置目录失败');
     });
-}
-
-function enableControls() {
-    document.getElementById('saveBtn').disabled = false;
-    document.getElementById('prevBtn').disabled = false;
-    document.getElementById('nextBtn').disabled = false;
-    document.getElementById('mergeBtn').disabled = false;
-    document.getElementById('unmergeBtn').disabled = false;
-    document.getElementById('showRelativeImageBtn').disabled = false;
-    document.getElementById('formatErrorBtn').disabled = false;
-    document.getElementById('gotoInput').disabled = false;
-    document.getElementById('gotoBtn').disabled = false;
 }
 
 function loadCurrentImage() {
@@ -294,9 +429,10 @@ function loadCurrentImage() {
         }
         
         updateImageDisplay(data);
-        updateTableData(data.tableData1, data.tableData2);
-        updateCounter(data.currentIndex, data.total);
-        updateImageStatus(data.status);
+        loadLabelData(data.labelData);
+        updateCounters(data.currentIndex, data.total);
+        updateNavigationButtons(data.currentIndex, data.total);
+        updateImageValidityIndicator();
     })
     .catch(error => {
         console.error('Error:', error);
@@ -305,461 +441,1129 @@ function loadCurrentImage() {
 }
 
 function updateImageDisplay(data) {
-    const img = document.getElementById('tableImage');
+    const img = document.getElementById('documentImage');
     const placeholder = document.getElementById('noImagePlaceholder');
-    const imageName = document.getElementById('imageName');
     
     img.src = `${API_BASE}/get_image/${encodeURIComponent(data.imagePath)}`;
     img.style.display = 'block';
     placeholder.style.display = 'none';
-    imageName.textContent = data.imageName;
     
-    currentRelativePath = data.relativePath || '';
+    img.onload = function() {
+        resetZoom();
+        renderBoxes();
+    };
 }
 
-function updateTableData(tableData1, tableData2) {
-    isLoading = true;
-    
-    currentTableData1 = tableData1;
-    currentTableData2 = tableData2;
-    
-    hot1.updateSettings({ mergeCells: [] });
-    hot2.updateSettings({ mergeCells: [] });
-    savedSelection1 = null;
-    savedSelection2 = null;
-    
-    loadTableDataToHot(hot1, tableData1);
-    loadTableDataToHot(hot2, tableData2);
-    
-    const section1 = document.getElementById('table-section-1');
-    const section2 = document.getElementById('table-section-2');
-    section1.classList.remove('collapsed');
-    section2.classList.add('collapsed');
-    
-    setTimeout(() => {
-        isLoading = false;
-        selectTable(1);
-        hot1.render();
-    }, 100);
+function loadLabelData(data) {
+    labelData = data || { boxes: [] };
+    if (!labelData.boxes) {
+        labelData.boxes = [];
+    }
+    selectedBoxIndex = -1;
+    history = [JSON.stringify({ boxes: labelData.boxes, selectedIndex: selectedBoxIndex })];
+    historyIndex = 0;
+    updateUndoRedoButtons();
+    renderBoxes();
+    updateBoxCounter();
+    closePanel();
 }
 
-function loadTableDataToHot(hot, tableData) {
-    if (!tableData || tableData.error) {
-        hot.loadData([['']]);
+function updateCounters(current, total) {
+    currentIndex = current;
+    totalImages = total;
+    const indices = getNavigableImageIndices();
+    const position = indices.indexOf(current);
+    document.getElementById('imageCounter').textContent = `${position >= 0 ? position + 1 : 0} / ${indices.length}`;
+}
+
+function updateNavigationButtons(current) {
+    const indices = getNavigableImageIndices();
+    const position = indices.indexOf(current);
+    document.getElementById('firstImageBtn').disabled = position <= 0;
+    document.getElementById('prevImageBtn').disabled = position <= 0;
+    document.getElementById('nextImageBtn').disabled = position < 0 || position >= indices.length - 1;
+    document.getElementById('lastImageBtn').disabled = position < 0 || position >= indices.length - 1;
+}
+
+function getNavigableImageIndices() {
+    if (invalidImagesOnly) return [...invalidImageIndices];
+    return Array.from({ length: totalImages }, (_, index) => index);
+}
+
+async function refreshImageStatuses() {
+    const response = await fetch(`${API_BASE}/image_statuses`);
+    const data = await response.json();
+    invalidImageIndices = data.invalidIndices || [];
+    totalImages = data.total || 0;
+    updateImageValidityIndicator();
+}
+
+async function toggleInvalidImagesOnly() {
+    invalidImagesOnly = !invalidImagesOnly;
+    const button = document.getElementById('invalidImagesOnlyBtn');
+    button.classList.toggle('active', invalidImagesOnly);
+    button.textContent = invalidImagesOnly ? '显示全部图片' : '仅无效图片';
+
+    const indices = getNavigableImageIndices();
+    if (indices.length === 0) {
+        updateCounters(currentIndex, totalImages);
+        updateNavigationButtons(currentIndex);
+        return;
+    }
+    const target = indices.includes(currentIndex) ? currentIndex : indices[0];
+    if (target === currentIndex) {
+        updateCounters(currentIndex, totalImages);
+        updateNavigationButtons(currentIndex);
+    } else {
+        gotoImage(target);
+    }
+}
+
+function updateImageValidityIndicator() {
+    const indicator = document.getElementById('imageValidityIndicator');
+    if (totalImages === 0) {
+        indicator.className = 'image-validity-indicator neutral';
+        indicator.title = '尚未加载图片';
+        return;
+    }
+    const hasInvalid = labelData.boxes?.some(box => box.block_valid === false);
+    indicator.className = `image-validity-indicator ${hasInvalid ? 'invalid' : 'valid'}`;
+    indicator.title = hasInvalid ? '当前图片仍有无效框' : '当前图片没有无效框';
+}
+
+function updateBoxCounter() {
+    const visibleIndices = getVisibleBoxIndices();
+    const count = visibleIndices.length;
+    const position = visibleIndices.indexOf(selectedBoxIndex);
+    const current = position >= 0 ? position + 1 : 0;
+    document.getElementById('boxCounter').textContent = `${current} / ${count}`;
+    document.getElementById('prevBoxBtn').disabled = position <= 0;
+    document.getElementById('nextBoxBtn').disabled = position < 0 || position >= count - 1;
+}
+
+function renderBoxes() {
+    const svg = document.getElementById('boxesOverlay');
+    const img = document.getElementById('documentImage');
+    const container = document.getElementById('imageContainer');
+    
+    if (!img.complete || !img.naturalWidth) {
+        setTimeout(renderBoxes, 100);
         return;
     }
     
-    const data = tableData.data || [['']];
-    const mergeCells = tableData.mergeCells || [];
+    const containerRect = container.getBoundingClientRect();
+    const imgRect = img.getBoundingClientRect();
     
-    hot.loadData(data);
+    const scaleX = imgRect.width / img.naturalWidth;
+    const scaleY = imgRect.height / img.naturalHeight;
     
-    const rowCount = data.length;
-    const colCount = data[0] ? data[0].length : 0;
+    svg.setAttribute('width', containerRect.width);
+    svg.setAttribute('height', containerRect.height);
+    svg.style.left = '0px';
+    svg.style.top = '0px';
     
-    const validMergeCells = mergeCells.filter(cell => {
-        return cell.row >= 0 && 
-               cell.col >= 0 && 
-               cell.row + cell.rowspan <= rowCount && 
-               cell.col + cell.colspan <= colCount;
-    });
+    const offsetX = imgRect.left - containerRect.left;
+    const offsetY = imgRect.top - containerRect.top;
     
-    setTimeout(() => {
-        hot.updateSettings({ mergeCells: validMergeCells });
-    }, 0);
-}
+    svg.innerHTML = '';
+    
+    labelData.boxes.forEach((box, index) => {
+        if (invalidOnly && box.block_valid !== false) return;
 
-function updateCounter(current, total) {
-    totalImages = total;
-    document.getElementById('imageCounter').textContent = `${current + 1} / ${total}`;
-    document.getElementById('gotoInput').max = total;
-}
-
-function autoSave(callback) {
-    const hot = selectedTable === 1 ? hot1 : hot2;
-    const data = hot.getData();
-    const mergeCells = hot.getPlugin('mergeCells').mergedCellsCollection.mergedCells;
-    
-    const tableData = {
-        data: data,
-        mergeCells: mergeCells.map(cell => ({
-            row: cell.row,
-            col: cell.col,
-            rowspan: cell.rowspan,
-            colspan: cell.colspan
-        }))
-    };
-    
-    fetch(`${API_BASE}/save`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ 
-            tableData: tableData,
-            selectedTable: selectedTable
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.error) {
-            console.error('自动保存失败:', data.error);
-        }
-        if (callback) callback();
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        if (callback) callback();
-    });
-}
-
-function prevImage() {
-    autoSave(() => {
-        fetch(`${API_BASE}/prev_image`, { method: 'POST' })
-        .then(response => response.json())
-        .then(data => {
-            if (data.error) {
-                if (data.error !== 'Already at first image') {
-                    alert('错误: ' + data.error);
-                }
-                return;
-            }
+        const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        group.setAttribute('data-index', index);
+        
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        
+        let x, y, width, height;
+        
+        if (box.points && box.points.length > 0) {
+            const scaledPoints = box.points.map(p => ({
+                x: offsetX + p[0] * scaleX,
+                y: offsetY + p[1] * scaleY
+            }));
             
-            updateImageDisplay(data);
-            updateTableData(data.tableData1, data.tableData2);
-            updateCounter(data.currentIndex, data.total);
-            updateImageStatus(data.status);
-        })
-        .catch(error => {
-            console.error('Error:', error);
-        });
-    });
-}
-
-function nextImage(skipAutoSave = false) {
-    if (skipAutoSave) {
-        fetch(`${API_BASE}/next_image`, { method: 'POST' })
-        .then(response => response.json())
-        .then(data => {
-            if (data.error) {
-                if (data.error !== 'Already at last image') {
-                    console.error('Error:', data.error);
-                }
-                return;
-            }
+            const d = scaledPoints.map((p, i) => 
+                (i === 0 ? 'M' : 'L') + p.x + ',' + p.y
+            ).join(' ') + ' Z';
+            path.setAttribute('d', d);
             
-            updateImageDisplay(data);
-            updateTableData(data.tableData1, data.tableData2);
-            updateCounter(data.currentIndex, data.total);
-            updateImageStatus(data.status);
-        })
-        .catch(error => {
-            console.error('Error:', error);
-        });
-    } else {
-        autoSave(() => {
-            fetch(`${API_BASE}/next_image`, { method: 'POST' })
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    if (data.error !== 'Already at last image') {
-                        alert('错误: ' + data.error);
-                    }
-                    return;
-                }
-                
-                updateImageDisplay(data);
-                updateTableData(data.tableData1, data.tableData2);
-                updateCounter(data.currentIndex, data.total);
-                updateImageStatus(data.status);
-            })
-            .catch(error => {
-                console.error('Error:', error);
-            });
-        });
-    }
-}
-
-function saveTable() {
-    const hot = selectedTable === 1 ? hot1 : hot2;
-    const data = hot.getData();
-    const mergeCells = hot.getPlugin('mergeCells').mergedCellsCollection.mergedCells;
-    const saveStatus = document.getElementById('saveStatus');
-    
-    saveStatus.textContent = '保存中...';
-    saveStatus.className = 'save-status saving';
-    
-    const tableData = {
-        data: data,
-        mergeCells: mergeCells.map(cell => ({
-            row: cell.row,
-            col: cell.col,
-            rowspan: cell.rowspan,
-            colspan: cell.colspan
-        }))
-    };
-    
-    fetch(`${API_BASE}/save`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ 
-            tableData: tableData,
-            selectedTable: selectedTable
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.error) {
-            saveStatus.textContent = '保存失败';
-            saveStatus.className = 'save-status error';
-            setTimeout(() => {
-                saveStatus.textContent = '';
-                saveStatus.className = 'save-status';
-            }, 2000);
+            const minX = Math.min(...scaledPoints.map(p => p.x));
+            const minY = Math.min(...scaledPoints.map(p => p.y));
+            const maxX = Math.max(...scaledPoints.map(p => p.x));
+            const maxY = Math.max(...scaledPoints.map(p => p.y));
+            x = minX;
+            y = minY;
+            width = maxX - minX;
+            height = maxY - minY;
+        } else if (box.x !== undefined && box.y !== undefined && box.width && box.height) {
+            x = offsetX + box.x * scaleX;
+            y = offsetY + box.y * scaleY;
+            width = box.width * scaleX;
+            height = box.height * scaleY;
+            const d = `M ${x} ${y} L ${x + width} ${y} L ${x + width} ${y + height} L ${x} ${y + height} Z`;
+            path.setAttribute('d', d);
+        } else {
             return;
         }
         
-        saveStatus.textContent = '保存成功';
-        saveStatus.className = 'save-status success';
+        const color = categoryColors[box.category] || '#4a69bd';
+        path.setAttribute('fill', color + '33');
+        path.setAttribute('stroke', color);
+        path.setAttribute('stroke-width', 2);
+        path.setAttribute('class', `box-path ${box.category} ${index === selectedBoxIndex ? 'selected' : ''}`);
+        path.addEventListener('mousedown', (e) => {
+            if (currentTool !== 'select') return;
+            e.stopPropagation();
+            beginBoxMove(e, index);
+        });
+        path.addEventListener('click', (e) => {
+            e.stopPropagation();
+            selectBox(index);
+        });
         
-        setTimeout(() => {
-            saveStatus.textContent = '';
-            saveStatus.className = 'save-status';
-            nextImage(true);
-        }, 500);
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        saveStatus.textContent = '保存失败';
-        saveStatus.className = 'save-status error';
-        setTimeout(() => {
-            saveStatus.textContent = '';
-            saveStatus.className = 'save-status';
-        }, 2000);
+        group.appendChild(path);
+        
+        const labelBg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        const labelText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        
+        const categoryName = box.category || '未知';
+        const blockId = getBoxId(box);
+        const labelName = `${blockId ?? '-'} · ${categoryName}`;
+        const labelWidth = labelName.length * 10 + 12;
+        
+        labelBg.setAttribute('x', x);
+        labelBg.setAttribute('y', y - 18);
+        labelBg.setAttribute('width', labelWidth);
+        labelBg.setAttribute('height', 18);
+        labelBg.setAttribute('fill', color);
+        labelBg.setAttribute('rx', 4);
+        
+        labelText.setAttribute('x', x + 6);
+        labelText.setAttribute('y', y - 6);
+        labelText.setAttribute('fill', 'white');
+        labelText.setAttribute('font-size', '11');
+        labelText.textContent = labelName;
+        
+        if (labelsVisible) {
+            group.appendChild(labelBg);
+            group.appendChild(labelText);
+        }
+        
+        svg.appendChild(group);
+
+        if (index === selectedBoxIndex && currentTool === 'select') {
+            appendResizeHandles(svg, box, index, offsetX, offsetY, scaleX, scaleY);
+        }
+    });
+
+    renderDrawingDraft(svg, offsetX, offsetY, scaleX, scaleY);
+}
+
+function appendResizeHandles(svg, box, index, offsetX, offsetY, scaleX, scaleY) {
+    const points = box.points && box.points.length > 0
+        ? box.points
+        : [
+            [box.x, box.y],
+            [box.x + box.width, box.y],
+            [box.x + box.width, box.y + box.height],
+            [box.x, box.y + box.height]
+        ];
+
+    points.forEach((point, pointIndex) => {
+        const handle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        handle.setAttribute('cx', offsetX + point[0] * scaleX);
+        handle.setAttribute('cy', offsetY + point[1] * scaleY);
+        handle.setAttribute('r', 5);
+        handle.setAttribute('class', 'resize-handle');
+        handle.addEventListener('mousedown', (e) => {
+            e.stopPropagation();
+            beginBoxResize(e, index, pointIndex);
+        });
+        svg.appendChild(handle);
     });
 }
 
-function mergeCells() {
-    const hot = selectedTable === 1 ? hot1 : hot2;
-    const savedSelection = selectedTable === 1 ? savedSelection1 : savedSelection2;
-    
-    let selectedRange = null;
-    
-    const currentRanges = hot.getSelectedRange();
-    
-    if (currentRanges && currentRanges.length > 0) {
-        selectedRange = currentRanges[0];
-    } else if (savedSelection) {
-        selectedRange = savedSelection;
+function renderDrawingDraft(svg, offsetX, offsetY, scaleX, scaleY) {
+    if (draftBox) {
+        const x = offsetX + draftBox.x * scaleX;
+        const y = offsetY + draftBox.y * scaleY;
+        const width = draftBox.width * scaleX;
+        const height = draftBox.height * scaleY;
+        const draft = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        draft.setAttribute('x', x);
+        draft.setAttribute('y', y);
+        draft.setAttribute('width', width);
+        draft.setAttribute('height', height);
+        draft.setAttribute('class', 'drawing-draft');
+        svg.appendChild(draft);
     }
+
+    if (polygonPoints.length > 0) {
+        const displayPoints = polygonPointer ? [...polygonPoints, polygonPointer] : polygonPoints;
+        const polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+        polygon.setAttribute('points', displayPoints.map(point =>
+            `${offsetX + point[0] * scaleX},${offsetY + point[1] * scaleY}`
+        ).join(' '));
+        polygon.setAttribute('class', 'drawing-draft polygon-draft');
+        svg.appendChild(polygon);
+
+        polygonPoints.forEach((point, index) => {
+            const vertex = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            vertex.setAttribute('cx', offsetX + point[0] * scaleX);
+            vertex.setAttribute('cy', offsetY + point[1] * scaleY);
+            vertex.setAttribute('r', index === 0 ? 6 : 4);
+            vertex.setAttribute('class', 'polygon-draft-point');
+            svg.appendChild(vertex);
+        });
+    }
+}
+
+function getImagePoint(e, clampToImage = true) {
+    const img = document.getElementById('documentImage');
+    const rect = img.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+
+    let x = (e.clientX - rect.left) * img.naturalWidth / rect.width;
+    let y = (e.clientY - rect.top) * img.naturalHeight / rect.height;
+    if (clampToImage) {
+        x = Math.max(0, Math.min(img.naturalWidth, x));
+        y = Math.max(0, Math.min(img.naturalHeight, y));
+    }
+    return [x, y];
+}
+
+function cloneBox(box) {
+    return JSON.parse(JSON.stringify(box));
+}
+
+function beginBoxMove(e, index) {
+    selectedBoxIndex = index;
+    boxInteraction = {
+        type: 'move',
+        index,
+        start: getImagePoint(e),
+        original: cloneBox(labelData.boxes[index]),
+        changed: false
+    };
+    renderBoxes();
+}
+
+function beginBoxResize(e, index, pointIndex) {
+    selectedBoxIndex = index;
+    boxInteraction = {
+        type: 'resize',
+        index,
+        pointIndex,
+        start: getImagePoint(e),
+        original: cloneBox(labelData.boxes[index]),
+        changed: false
+    };
+}
+
+function syncBoxBoundsFromPoints(box) {
+    const xs = box.points.map(point => point[0]);
+    const ys = box.points.map(point => point[1]);
+    box.x = Math.min(...xs);
+    box.y = Math.min(...ys);
+    box.width = Math.max(...xs) - box.x;
+    box.height = Math.max(...ys) - box.y;
+}
+
+async function selectBox(index) {
+    if (selectedBoxIndex >= 0 && selectedBoxIndex !== index) {
+        const synced = await syncTableEditorContent();
+        if (!synced) return;
+    }
+    selectedBoxIndex = index;
+    renderBoxes();
+    showPanel();
+    updateBoxDetails(index);
+    updateBoxCounter();
+}
+
+function showPanel() {
+    const panel = document.getElementById('rightPanel');
+    panel.classList.add('expanded');
+    scheduleRenderBoxes();
+}
+
+async function closePanel() {
+    if (selectedBoxIndex >= 0) {
+        const synced = await syncTableEditorContent();
+        if (!synced) return;
+    }
+    const panel = document.getElementById('rightPanel');
+    panel.classList.remove('expanded', 'table-mode');
+    selectedBoxIndex = -1;
+    document.getElementById('noBoxSelected').style.display = 'flex';
+    document.getElementById('boxDetails').style.display = 'none';
+    scheduleRenderBoxes();
+}
+
+function updateBoxDetails(index) {
+    if (index < 0 || index >= labelData.boxes.length) return;
     
-    if (!selectedRange) {
+    const box = labelData.boxes[index];
+    document.getElementById('noBoxSelected').style.display = 'none';
+    document.getElementById('boxDetails').style.display = 'block';
+    
+    document.getElementById('categorySelect').value = box.category || 'text';
+    document.getElementById('blockIdInput').value = getBoxId(box) ?? '';
+    document.getElementById('contentTextarea').value = box.content || '';
+    updateCharCount();
+    renderContentPreview();
+    updateBoxPreview(box);
+    updateDetailsMode(box);
+}
+
+function updateDetailsMode(box) {
+    const isTable = box.category === 'table';
+    const panel = document.getElementById('rightPanel');
+    panel.classList.toggle('table-mode', isTable);
+    document.getElementById('boxPreviewSection').style.display = isTable ? 'none' : 'block';
+    document.getElementById('contentEditorSection').style.display = isTable ? 'none' : 'block';
+    document.getElementById('renderResultSection').style.display = isTable ? 'none' : 'block';
+    document.getElementById('tableEditorSection').style.display = isTable ? 'block' : 'none';
+
+    if (isTable) {
+        updateTableBoxPreview(box);
+        loadTableEditor(box.content || '');
+        setTimeout(() => tableEditor.render(), 350);
+    }
+    scheduleRenderBoxes();
+}
+
+async function loadTableEditor(content) {
+    const token = ++tableLoadToken;
+    setTableEditorStatus('正在解析表格...');
+
+    try {
+        const response = await fetch(`${API_BASE}/table/parse`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content })
+        });
+        const tableData = await response.json();
+        if (token !== tableLoadToken) return;
+        if (tableData.error) throw new Error(tableData.error);
+        loadTableDataToEditor(tableData);
+        setTableEditorStatus('');
+    } catch (error) {
+        if (token !== tableLoadToken) return;
+        loadTableDataToEditor({ data: [['']], mergeCells: [] });
+        setTableEditorStatus(`表格解析失败: ${error.message}`, true);
+    }
+}
+
+function loadTableDataToEditor(tableData) {
+    tableEditorLoading = true;
+    tableEditorSelection = null;
+    tableEditor.updateSettings({ mergeCells: [] });
+    const data = tableData.data && tableData.data.length ? tableData.data : [['']];
+    tableEditor.loadData(data);
+
+    const mergeCells = (tableData.mergeCells || []).filter(cell =>
+        cell.row >= 0 && cell.col >= 0 &&
+        cell.row + cell.rowspan <= data.length &&
+        cell.col + cell.colspan <= (data[0] ? data[0].length : 0)
+    );
+    tableEditor.updateSettings({ mergeCells });
+    tableEditorLoading = false;
+    tableEditor.render();
+}
+
+function setTableEditorStatus(message, isError = false) {
+    const status = document.getElementById('tableEditorStatus');
+    status.textContent = message;
+    status.classList.toggle('error', isError);
+}
+
+function getTableEditorData() {
+    const mergeCells = tableEditor.getPlugin('mergeCells').mergedCellsCollection.mergedCells;
+    return {
+        data: tableEditor.getData(),
+        mergeCells: mergeCells.map(cell => ({
+            row: cell.row,
+            col: cell.col,
+            rowspan: cell.rowspan,
+            colspan: cell.colspan
+        }))
+    };
+}
+
+async function syncTableEditorContent() {
+    if (selectedBoxIndex < 0 || labelData.boxes[selectedBoxIndex].category !== 'table') return true;
+    setTableEditorStatus('正在保存表格...');
+
+    try {
+        const response = await fetch(`${API_BASE}/table/serialize`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tableData: getTableEditorData() })
+        });
+        const data = await response.json();
+        if (data.error) throw new Error(data.error);
+        labelData.boxes[selectedBoxIndex].content = data.content;
+        document.getElementById('contentTextarea').value = data.content;
+        setTableEditorStatus('表格内容已更新');
+        return true;
+    } catch (error) {
+        setTableEditorStatus(`表格保存失败: ${error.message}`, true);
+        return false;
+    }
+}
+
+function mergeTableCells() {
+    const range = tableEditor.getSelectedRange()?.[0] || tableEditorSelection;
+    if (!range) {
         alert('请先选择要合并的单元格');
         return;
     }
-    
-    const mergePlugin = hot.getPlugin('mergeCells');
-    
-    const minRow = Math.min(selectedRange.from.row, selectedRange.to.row);
-    const maxRow = Math.max(selectedRange.from.row, selectedRange.to.row);
-    const minCol = Math.min(selectedRange.from.col, selectedRange.to.col);
-    const maxCol = Math.max(selectedRange.from.col, selectedRange.to.col);
-    
-    mergePlugin.merge(minRow, minCol, maxRow , maxCol);
-    hot.render();
+    const from = range.from || range;
+    const to = range.to || range;
+    tableEditor.getPlugin('mergeCells').merge(
+        Math.min(from.row, to.row), Math.min(from.col, to.col),
+        Math.max(from.row, to.row), Math.max(from.col, to.col)
+    );
+    tableEditor.render();
 }
 
-function unmergeCells() {
-    const hot = selectedTable === 1 ? hot1 : hot2;
-    const savedSelection = selectedTable === 1 ? savedSelection1 : savedSelection2;
-    
-    let selectedRange = null;
-    
-    const currentRanges = hot.getSelectedRange();
-    if (currentRanges && currentRanges.length > 0) {
-        selectedRange = currentRanges[0];
-    } else if (savedSelection) {
-        selectedRange = savedSelection;
-    }
-    
-    if (!selectedRange) {
+function unmergeTableCells() {
+    const range = tableEditor.getSelectedRange()?.[0] || tableEditorSelection;
+    if (!range) {
         alert('请先选择要取消合并的单元格');
         return;
     }
-    
-    const mergePlugin = hot.getPlugin('mergeCells');
-    const mergedCells = mergePlugin.mergedCellsCollection.mergedCells;
-    
-    let foundMerge = null;
-    for (const mergeCell of mergedCells) {
-        const row = mergeCell.row;
-        const col = mergeCell.col;
-        const rowspan = mergeCell.rowspan;
-        const colspan = mergeCell.colspan;
-        
-        const minRow = Math.min(selectedRange.from.row, selectedRange.to.row);
-        const maxRow = Math.max(selectedRange.from.row, selectedRange.to.row);
-        const minCol = Math.min(selectedRange.from.col, selectedRange.to.col);
-        const maxCol = Math.max(selectedRange.from.col, selectedRange.to.col);
-        
-        if (row >= minRow && row + rowspan - 1 <= maxRow &&
-            col >= minCol && col + colspan - 1 <= maxCol) {
-            foundMerge = mergeCell;
-            break;
-        }
-    }
-    
-    if (!foundMerge) {
+    const from = range.from || range;
+    const to = range.to || range;
+    const minRow = Math.min(from.row, to.row);
+    const maxRow = Math.max(from.row, to.row);
+    const minCol = Math.min(from.col, to.col);
+    const maxCol = Math.max(from.col, to.col);
+    const mergedCells = tableEditor.getPlugin('mergeCells').mergedCellsCollection.mergedCells;
+    const found = mergedCells.find(cell =>
+        cell.row >= minRow && cell.row + cell.rowspan - 1 <= maxRow &&
+        cell.col >= minCol && cell.col + cell.colspan - 1 <= maxCol
+    );
+    if (!found) {
         alert('选中的单元格不是合并单元格');
         return;
     }
-    
-    mergePlugin.unmerge(foundMerge.row, foundMerge.col);
-    hot.render();
+    tableEditor.getPlugin('mergeCells').unmerge(found.row, found.col);
+    tableEditor.render();
 }
 
-function showFloatingImage() {
-    if (!currentRelativePath) {
-        alert('没有可用的相对路径图片');
+function updateTableBoxPreview(box) {
+    const source = document.getElementById('documentImage');
+    const canvas = document.getElementById('tableBoxPreview');
+    const ctx = canvas.getContext('2d');
+    const bounds = getBoxBounds(box);
+    const width = Math.min(700, Math.max(1, bounds.width));
+    const height = Math.min(160, Math.max(1, bounds.height / bounds.width * width));
+    canvas.width = width;
+    canvas.height = height;
+    ctx.drawImage(source, bounds.x, bounds.y, bounds.width, bounds.height, 0, 0, width, height);
+}
+
+function getBoxBounds(box) {
+    if (box.points && box.points.length > 0) {
+        const xs = box.points.map(point => point[0]);
+        const ys = box.points.map(point => point[1]);
+        const x = Math.min(...xs);
+        const y = Math.min(...ys);
+        return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
+    }
+    return { x: box.x, y: box.y, width: box.width, height: box.height };
+}
+
+function updateBoxPreview(box) {
+    const canvas = document.getElementById('boxPreview');
+    const ctx = canvas.getContext('2d');
+    const img = document.getElementById('documentImage');
+    
+    if (!img.complete) {
+        setTimeout(() => updateBoxPreview(box), 100);
         return;
     }
     
-    const modal = document.getElementById('floatingImageModal');
-    const img = document.getElementById('floatingImage');
-    const loading = document.getElementById('floatingImageLoading');
-    const error = document.getElementById('floatingImageError');
-    const title = document.getElementById('floatingImageTitle');
+    const rect = img.getBoundingClientRect();
+    const scaleX = img.naturalWidth / rect.width;
+    const scaleY = img.naturalHeight / rect.height;
     
-    title.textContent = currentRelativePath;
-    img.style.display = 'none';
-    error.style.display = 'none';
-    loading.style.display = 'block';
-    modal.style.display = 'flex';
+    let x, y, width, height;
     
-    fetch(`${API_BASE}/get_relative_image`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ relativePath: currentRelativePath })
-    })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error('图片加载失败');
-        }
-        return response.blob();
-    })
-    .then(blob => {
-        const url = URL.createObjectURL(blob);
-        img.onload = function() {
-            loading.style.display = 'none';
-            img.style.display = 'block';
-            URL.revokeObjectURL(url);
-        };
-        img.onerror = function() {
-            loading.style.display = 'none';
-            error.style.display = 'block';
-            URL.revokeObjectURL(url);
-        };
-        img.src = url;
-    })
-    .catch(err => {
-        console.error('Error:', err);
-        loading.style.display = 'none';
-        error.style.display = 'block';
-    });
-}
-
-function closeFloatingImage() {
-    const modal = document.getElementById('floatingImageModal');
-    const img = document.getElementById('floatingImage');
-    modal.style.display = 'none';
-    img.src = '';
-}
-
-function gotoImage() {
-    const input = document.getElementById('gotoInput');
-    const index = parseInt(input.value);
-    
-    if (isNaN(index) || index < 1 || index > totalImages) {
-        alert(`请输入有效的序号（1 - ${totalImages}）`);
-        return;
+    if (box.points && box.points.length > 0) {
+        const minX = Math.min(...box.points.map(p => p[0]));
+        const minY = Math.min(...box.points.map(p => p[1]));
+        const maxX = Math.max(...box.points.map(p => p[0]));
+        const maxY = Math.max(...box.points.map(p => p[1]));
+        x = minX;
+        y = minY;
+        width = maxX - minX;
+        height = maxY - minY;
+    } else {
+        x = box.x;
+        y = box.y;
+        width = box.width;
+        height = box.height;
     }
     
-    autoSave(() => {
-        fetch(`${API_BASE}/goto_image`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ index: index - 1 })
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.error) {
-                alert('错误: ' + data.error);
+    const previewWidth = 360;
+    const previewHeight = Math.min(150, (height / width) * previewWidth);
+    
+    canvas.width = previewWidth;
+    canvas.height = previewHeight;
+    
+    ctx.drawImage(
+        img,
+        x, y, width, height,
+        0, 0, previewWidth, previewHeight
+    );
+}
+
+function updateCharCount() {
+    const textarea = document.getElementById('contentTextarea');
+    const count = textarea.value.length;
+    document.getElementById('charCount').textContent = `${count} / 500`;
+    
+    if (count > 500) {
+        textarea.value = textarea.value.substring(0, 500);
+        document.getElementById('charCount').textContent = '500 / 500';
+    }
+}
+
+async function onCategoryChange() {
+    if (selectedBoxIndex >= 0) {
+        const box = labelData.boxes[selectedBoxIndex];
+        if (box.category === 'table') {
+            const synced = await syncTableEditorContent();
+            if (!synced) {
+                document.getElementById('categorySelect').value = 'table';
                 return;
             }
-            
-            updateImageDisplay(data);
-            updateTableData(data.tableData1, data.tableData2);
-            updateCounter(data.currentIndex, data.total);
-            updateImageStatus(data.status);
-            input.value = '';
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            alert('跳转失败');
-        });
-    });
-}
-
-function updateImageStatus(status) {
-    const statusElement = document.getElementById('imageStatus');
-    statusElement.className = 'image-status';
-    
-    switch(status) {
-        case 'unannotated':
-            statusElement.textContent = '未标注';
-            statusElement.classList.add('status-unannotated');
-            break;
-        case 'annotated':
-            statusElement.textContent = '已标注';
-            statusElement.classList.add('status-annotated');
-            break;
-        case 'format_error':
-            statusElement.textContent = '版式错误';
-            statusElement.classList.add('format-error');
-            break;
-        default:
-            statusElement.textContent = '未标注';
-            statusElement.classList.add('status-unannotated');
+        }
+        saveToHistory();
+        box.category = document.getElementById('categorySelect').value;
+        renderBoxes();
+        renderContentPreview();
+        updateDetailsMode(box);
     }
 }
 
-function markFormatError() {
-    fetch(`${API_BASE}/mark_format_error`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
+function onBlockIdChange() {
+    if (selectedBoxIndex < 0) return;
+
+    const input = document.getElementById('blockIdInput');
+    const requestedId = Number.parseInt(input.value, 10);
+    if (!Number.isFinite(requestedId)) {
+        input.value = getBoxId(labelData.boxes[selectedBoxIndex]) ?? '';
+        return;
+    }
+
+    saveToHistory();
+    input.value = moveBlockId(selectedBoxIndex, requestedId);
+    renderBoxes();
+}
+
+function onContentChange() {
+    updateCharCount();
+    renderContentPreview();
+    
+    if (selectedBoxIndex >= 0) {
+        labelData.boxes[selectedBoxIndex].content = document.getElementById('contentTextarea').value;
+    }
+}
+
+function onContentKeydown(e) {
+    if (e.ctrlKey && e.key === 's') {
+        e.preventDefault();
+        saveChanges();
+    }
+}
+
+function renderContentPreview() {
+    const content = document.getElementById('contentTextarea').value;
+    const category = document.getElementById('categorySelect').value;
+    const renderContainer = document.getElementById('renderContent');
+    
+    if (!content.trim()) {
+        renderContainer.innerHTML = '<p style="color: #999;">无内容</p>';
+        return;
+    }
+    
+    switch(category) {
+        case 'formula':
+            renderContainer.innerHTML = `
+                <div style="font-size: 16px; text-align: center; padding: 20px;">
+                    \(\displaystyle ${content}\)
+                </div>
+            `;
+            if (window.MathJax) {
+                MathJax.typeset();
+            }
+            break;
+        case 'table':
+            renderContainer.innerHTML = content;
+            break;
+        case 'image':
+            renderContainer.innerHTML = `<img src="${content}" style="max-width: 100%; max-height: 150px;" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=&quot;http://www.w3.org/2000/svg&quot; width=&quot;100&quot; height=&quot;100&quot;%3E%3Ctext y=&quot;.9em&quot; font-size=&quot;90&quot;%3E?%3C/text%3E%3C/svg%3E'">`;
+            break;
+        default:
+            renderContainer.innerHTML = `<pre style="white-space: pre-wrap; word-break: break-all;">${content}</pre>`;
+    }
+}
+
+function onImageMouseDown(e) {
+    if (currentTool === 'select') {
+        if (e.target.classList.contains('box-path') || e.target.classList.contains('resize-handle')) {
+            return;
         }
+        selectedBoxIndex = -1;
+        renderBoxes();
+        closePanel();
+        return;
+    }
+    
+    if (currentTool === 'rectBox') {
+        isDrawing = true;
+        drawStart = getImagePoint(e);
+        draftBox = { x: drawStart[0], y: drawStart[1], width: 0, height: 0 };
+        renderBoxes();
+        return;
+    }
+
+    if (currentTool === 'polygon') {
+        const point = getImagePoint(e);
+        if (!point) return;
+
+        if (polygonPoints.length >= 3) {
+            const img = document.getElementById('documentImage');
+            const rect = img.getBoundingClientRect();
+            const closeDistance = 10 * img.naturalWidth / rect.width;
+            const first = polygonPoints[0];
+            if (Math.hypot(point[0] - first[0], point[1] - first[1]) <= closeDistance) {
+                finishPolygon();
+                return;
+            }
+        }
+
+        polygonPoints.push(point);
+        polygonPointer = point;
+        renderBoxes();
+    }
+}
+
+function onImageMouseMove(e) {
+    const point = getImagePoint(e);
+    if (!point) return;
+
+    if (boxInteraction) {
+        updateBoxInteraction(point);
+        return;
+    }
+
+    if (currentTool === 'polygon' && polygonPoints.length > 0) {
+        polygonPointer = point;
+        renderBoxes();
+        return;
+    }
+
+    if (!isDrawing || !drawStart) return;
+
+    draftBox = {
+        x: Math.min(drawStart[0], point[0]),
+        y: Math.min(drawStart[1], point[1]),
+        width: Math.abs(point[0] - drawStart[0]),
+        height: Math.abs(point[1] - drawStart[1])
+    };
+    renderBoxes();
+}
+
+function onImageMouseUp(e) {
+    if (boxInteraction) {
+        const interaction = boxInteraction;
+        if (interaction.changed) {
+            saveToHistory();
+        }
+        boxInteraction = null;
+        selectBox(interaction.index);
+        return;
+    }
+
+    if (!isDrawing || !drawStart) return;
+
+    if (draftBox && draftBox.width > 5 && draftBox.height > 5) {
+        const newBox = {
+            ...draftBox,
+            category: 'text',
+            content: '',
+            block_id: getNextBlockId()
+        };
+        
+        labelData.boxes.push(newBox);
+        selectedBoxIndex = labelData.boxes.length - 1;
+        saveToHistory();
+        renderBoxes();
+        showPanel();
+        updateBoxDetails(selectedBoxIndex);
+        updateBoxCounter();
+    }
+    
+    isDrawing = false;
+    drawStart = null;
+    draftBox = null;
+    renderBoxes();
+}
+
+function updateBoxInteraction(point) {
+    const interaction = boxInteraction;
+    const box = labelData.boxes[interaction.index];
+    const original = interaction.original;
+    const dx = point[0] - interaction.start[0];
+    const dy = point[1] - interaction.start[1];
+    const img = document.getElementById('documentImage');
+
+    if (!interaction.changed && Math.hypot(dx, dy) < 2) return;
+
+    if (interaction.type === 'move') {
+        if (original.points && original.points.length > 0) {
+            const xs = original.points.map(item => item[0]);
+            const ys = original.points.map(item => item[1]);
+            const limitedDx = Math.max(-Math.min(...xs), Math.min(img.naturalWidth - Math.max(...xs), dx));
+            const limitedDy = Math.max(-Math.min(...ys), Math.min(img.naturalHeight - Math.max(...ys), dy));
+            box.points = original.points.map(item => [item[0] + limitedDx, item[1] + limitedDy]);
+            syncBoxBoundsFromPoints(box);
+        } else {
+            box.x = Math.max(0, Math.min(img.naturalWidth - original.width, original.x + dx));
+            box.y = Math.max(0, Math.min(img.naturalHeight - original.height, original.y + dy));
+        }
+    } else if (original.points && original.points.length > 0) {
+        box.points = original.points.map(item => [...item]);
+        box.points[interaction.pointIndex] = point;
+        syncBoxBoundsFromPoints(box);
+    } else {
+        resizeRectangle(box, original, interaction.pointIndex, point);
+    }
+
+    interaction.changed = true;
+    renderBoxes();
+}
+
+function resizeRectangle(box, original, pointIndex, point) {
+    const oppositePoints = [
+        [original.x + original.width, original.y + original.height],
+        [original.x, original.y + original.height],
+        [original.x, original.y],
+        [original.x + original.width, original.y]
+    ];
+    const opposite = oppositePoints[pointIndex];
+    const minSize = 2;
+    let x = Math.min(point[0], opposite[0]);
+    let y = Math.min(point[1], opposite[1]);
+    let width = Math.abs(point[0] - opposite[0]);
+    let height = Math.abs(point[1] - opposite[1]);
+
+    if (width < minSize) width = minSize;
+    if (height < minSize) height = minSize;
+    box.x = x;
+    box.y = y;
+    box.width = width;
+    box.height = height;
+}
+
+function onImageDoubleClick(e) {
+    if (currentTool !== 'polygon' || polygonPoints.length < 3) return;
+    e.preventDefault();
+
+    const count = polygonPoints.length;
+    if (count >= 2) {
+        const last = polygonPoints[count - 1];
+        const previous = polygonPoints[count - 2];
+        if (Math.hypot(last[0] - previous[0], last[1] - previous[1]) < 5) {
+            polygonPoints.pop();
+        }
+    }
+    finishPolygon();
+}
+
+function finishPolygon() {
+    if (polygonPoints.length < 3) return;
+
+    const newBox = {
+        points: polygonPoints.map(point => [...point]),
+        category: 'text',
+        content: '',
+        block_id: getNextBlockId()
+    };
+    syncBoxBoundsFromPoints(newBox);
+    labelData.boxes.push(newBox);
+    selectedBoxIndex = labelData.boxes.length - 1;
+    polygonPoints = [];
+    polygonPointer = null;
+    saveToHistory();
+    renderBoxes();
+    showPanel();
+    updateBoxDetails(selectedBoxIndex);
+    updateBoxCounter();
+}
+
+function onDocumentKeydown(e) {
+    if (e.key === 'Escape' && (isDrawing || polygonPoints.length > 0 || boxInteraction)) {
+        cancelDrawing();
+    }
+}
+
+function deleteSelectedBox() {
+    if (selectedBoxIndex < 0 || selectedBoxIndex >= labelData.boxes.length) {
+        alert('请先选择一个框');
+        return;
+    }
+    
+    if (!confirm('确定要删除这个框吗？')) return;
+    
+    const visibleIndicesBefore = getVisibleBoxIndices();
+    const visiblePosition = visibleIndicesBefore.indexOf(selectedBoxIndex);
+    const deletedIndex = selectedBoxIndex;
+    const deletedValue = getBoxId(labelData.boxes[deletedIndex]);
+    const deletedId = deletedValue === null ? Number.NaN : Number(deletedValue);
+    saveToHistory();
+    labelData.boxes.splice(deletedIndex, 1);
+    closeBlockIdGap(deletedId);
+
+    const visibleIndicesAfter = getVisibleBoxIndices();
+    const nextPosition = Math.min(visiblePosition, visibleIndicesAfter.length - 1);
+    selectedBoxIndex = nextPosition >= 0 ? visibleIndicesAfter[nextPosition] : -1;
+    
+    renderBoxes();
+    updateBoxCounter();
+    
+    if (selectedBoxIndex >= 0) {
+        showPanel();
+        updateBoxDetails(selectedBoxIndex);
+    } else {
+        closePanel();
+    }
+}
+
+function saveToHistory() {
+    const state = JSON.stringify({
+        boxes: labelData.boxes,
+        selectedIndex: selectedBoxIndex
+    });
+    
+    history = history.slice(0, historyIndex + 1);
+    history.push(state);
+    historyIndex = history.length - 1;
+    
+    updateUndoRedoButtons();
+}
+
+function undo() {
+    if (historyIndex <= 0) return;
+    
+    historyIndex--;
+    const state = JSON.parse(history[historyIndex]);
+    labelData.boxes = state.boxes;
+    selectedBoxIndex = state.selectedIndex;
+    
+    renderBoxes();
+    updateBoxCounter();
+    
+    if (selectedBoxIndex >= 0) {
+        showPanel();
+        updateBoxDetails(selectedBoxIndex);
+    } else {
+        closePanel();
+    }
+    
+    updateUndoRedoButtons();
+}
+
+function redo() {
+    if (historyIndex >= history.length - 1) return;
+    
+    historyIndex++;
+    const state = JSON.parse(history[historyIndex]);
+    labelData.boxes = state.boxes;
+    selectedBoxIndex = state.selectedIndex;
+    
+    renderBoxes();
+    updateBoxCounter();
+    
+    if (selectedBoxIndex >= 0) {
+        showPanel();
+        updateBoxDetails(selectedBoxIndex);
+    } else {
+        closePanel();
+    }
+    
+    updateUndoRedoButtons();
+}
+
+function updateUndoRedoButtons() {
+    document.getElementById('undoBtn').disabled = historyIndex <= 0;
+    document.getElementById('redoBtn').disabled = historyIndex >= history.length - 1;
+}
+
+function zoom(delta) {
+    zoomLevel = Math.max(25, Math.min(400, zoomLevel + delta));
+    document.getElementById('zoomLevel').textContent = zoomLevel + '%';
+    
+    const img = document.getElementById('documentImage');
+    img.style.transform = `scale(${zoomLevel / 100})`;
+    img.style.transformOrigin = 'center center';
+    renderBoxes();
+}
+
+function resetZoom() {
+    zoomLevel = 100;
+    document.getElementById('zoomLevel').textContent = '100%';
+    
+    const img = document.getElementById('documentImage');
+    img.style.transform = 'none';
+    renderBoxes();
+}
+
+function fitWindow() {
+    const container = document.querySelector('.image-container-wrapper');
+    const img = document.getElementById('documentImage');
+    
+    if (!img.complete) return;
+    
+    const containerWidth = container.clientWidth;
+    const containerHeight = container.clientHeight;
+    const imgWidth = img.naturalWidth;
+    const imgHeight = img.naturalHeight;
+    
+    const scaleX = containerWidth / imgWidth;
+    const scaleY = containerHeight / imgHeight;
+    const scale = Math.min(scaleX, scaleY, 1);
+    
+    zoomLevel = Math.round(scale * 100);
+    document.getElementById('zoomLevel').textContent = zoomLevel + '%';
+    img.style.transform = `scale(${scale})`;
+    img.style.transformOrigin = 'center center';
+    renderBoxes();
+}
+
+function prevBox() {
+    const visibleIndices = getVisibleBoxIndices();
+    const position = visibleIndices.indexOf(selectedBoxIndex);
+    if (position > 0) selectBox(visibleIndices[position - 1]);
+}
+
+function nextBox() {
+    const visibleIndices = getVisibleBoxIndices();
+    const position = visibleIndices.indexOf(selectedBoxIndex);
+    if (position >= 0 && position < visibleIndices.length - 1) {
+        selectBox(visibleIndices[position + 1]);
+    }
+}
+
+async function copyContent() {
+    if (!await syncTableEditorContent()) return;
+    const content = document.getElementById('contentTextarea').value;
+    navigator.clipboard.writeText(content).then(() => {
+        alert('内容已复制到剪贴板');
+    }).catch(() => {
+        alert('复制失败');
+    });
+}
+
+async function saveChanges() {
+    if (!await syncTableEditorContent()) return;
+
+    const savedBox = selectedBoxIndex >= 0 ? labelData.boxes[selectedBoxIndex] : null;
+    const previousValidity = savedBox?.block_valid;
+    if (savedBox?.block_valid === false) savedBox.block_valid = true;
+
+    fetch(`${API_BASE}/save_label`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ labelData: labelData })
     })
     .then(response => response.json())
     .then(data => {
         if (data.error) {
-            alert('标记失败: ' + data.error);
+            if (savedBox) savedBox.block_valid = previousValidity;
+            alert('保存失败: ' + data.error);
             return;
         }
         
-        updateImageStatus('format_error');
-        setTimeout(() => {
-            nextImage(true);
-        }, 300);
+        
+        alert('保存成功');
+        updateImageValidityIndicator();
+        refreshImageStatuses().then(() => handleImageListAfterSave());
+    })
+    .catch(error => {
+        if (savedBox) savedBox.block_valid = previousValidity;
+        console.error('Error:', error);
+        alert('保存失败');
+    });
+}
+
+function handleImageListAfterSave() {
+    const indices = getNavigableImageIndices();
+    if (!invalidImagesOnly || indices.includes(currentIndex)) {
+        updateCounters(currentIndex, totalImages);
+        updateNavigationButtons(currentIndex);
+    } else if (indices.length > 0) {
+        const nextIndex = indices.find(index => index > currentIndex) ?? indices[0];
+        gotoImage(nextIndex);
+    } else {
+        updateCounters(currentIndex, totalImages);
+        updateNavigationButtons(currentIndex);
+    }
+}
+
+function firstImage() {
+    const indices = getNavigableImageIndices();
+    if (indices.length > 0 && currentIndex !== indices[0]) gotoImage(indices[0]);
+}
+
+function prevImage() {
+    const indices = getNavigableImageIndices();
+    const position = indices.indexOf(currentIndex);
+    if (position > 0) gotoImage(indices[position - 1]);
+}
+
+function nextImage() {
+    const indices = getNavigableImageIndices();
+    const position = indices.indexOf(currentIndex);
+    if (position >= 0 && position < indices.length - 1) gotoImage(indices[position + 1]);
+}
+
+function lastImage() {
+    const indices = getNavigableImageIndices();
+    const lastIndex = indices[indices.length - 1];
+    if (indices.length > 0 && currentIndex !== lastIndex) gotoImage(lastIndex);
+}
+
+function gotoImage(index) {
+    fetch(`${API_BASE}/goto_image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ index: index })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            alert('错误: ' + data.error);
+            return;
+        }
+        
+        updateImageDisplay(data);
+        loadLabelData(data.labelData);
+        updateCounters(data.currentIndex, data.total);
+        updateNavigationButtons(data.currentIndex, data.total);
+        updateImageValidityIndicator();
     })
     .catch(error => {
         console.error('Error:', error);
-        alert('标记失败');
+        alert('跳转失败');
     });
+}
+
+function saveLabelIfChanged() {
 }
