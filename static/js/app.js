@@ -24,12 +24,15 @@ let tableEditorSelection = null;
 let tableEditorLoading = false;
 let tableLoadToken = 0;
 let invalidOnly = false;
+let activeShortcutPanel = 'left';
 
 const API_BASE = '/api';
 
 const categoryColors = {
     text: '#4a69bd',
     formula: '#e53935',
+    display_formula: '#e53935',
+    inline_formula: '#e53935',
     table: '#4caf50',
     image: '#ff9800'
 };
@@ -67,7 +70,9 @@ function initOverlayResizeObserver() {
 }
 
 function initEventListeners() {
+    arrangeDetailsLayout();
     document.getElementById('changeDirBtn').addEventListener('click', openDirectoryModal);
+    document.getElementById('shortcutsBtn').addEventListener('click', showShortcutHelp);
     document.getElementById('selectMoveBtn').addEventListener('click', () => setTool('select'));
     document.getElementById('rectBoxBtn').addEventListener('click', () => setTool('rectBox'));
     document.getElementById('polygonBtn').addEventListener('click', () => setTool('polygon'));
@@ -106,12 +111,26 @@ function initEventListeners() {
     });
     
     document.getElementById('imageContainer').addEventListener('mousedown', onImageMouseDown);
+    document.getElementById('leftPanel').addEventListener('pointerdown', () => {
+        activeShortcutPanel = 'left';
+    });
+    document.getElementById('rightPanel').addEventListener('pointerdown', () => {
+        activeShortcutPanel = 'right';
+    });
     document.addEventListener('mousemove', onImageMouseMove);
     document.getElementById('imageContainer').addEventListener('dblclick', onImageDoubleClick);
     document.addEventListener('mouseup', onImageMouseUp);
     document.addEventListener('keydown', onDocumentKeydown);
     
     initResizer();
+}
+
+function arrangeDetailsLayout() {
+    const details = document.getElementById('boxDetails');
+    const preview = document.getElementById('boxPreviewSection');
+    const contentEditor = document.getElementById('contentEditorSection');
+    preview.querySelector('.section-label').textContent = '图片';
+    details.insertBefore(preview, contentEditor);
 }
 
 function initTableEditor() {
@@ -443,14 +462,21 @@ function loadCurrentImage() {
 function updateImageDisplay(data) {
     const img = document.getElementById('documentImage');
     const placeholder = document.getElementById('noImagePlaceholder');
-    
+
+    img.removeAttribute('src');
+    img.style.display = 'none';
     img.src = `${API_BASE}/get_image/${encodeURIComponent(data.imagePath)}`;
-    img.style.display = 'block';
-    placeholder.style.display = 'none';
-    
+
     img.onload = function() {
+        img.style.display = 'block';
+        placeholder.style.display = 'none';
         resetZoom();
         renderBoxes();
+    };
+    img.onerror = function() {
+        img.removeAttribute('src');
+        img.style.display = 'none';
+        placeholder.style.display = 'flex';
     };
 }
 
@@ -459,6 +485,11 @@ function loadLabelData(data) {
     if (!labelData.boxes) {
         labelData.boxes = [];
     }
+    labelData.boxes.forEach(box => {
+        if (box.category === 'formula') box.category = 'display_formula';
+        const bounds = getBoxBounds(box);
+        if (bounds) setBoxBounds(box, bounds);
+    });
     selectedBoxIndex = -1;
     history = [JSON.stringify({ boxes: labelData.boxes, selectedIndex: selectedBoxIndex })];
     historyIndex = 0;
@@ -596,15 +627,15 @@ function renderBoxes() {
             y = minY;
             width = maxX - minX;
             height = maxY - minY;
-        } else if (box.x !== undefined && box.y !== undefined && box.width && box.height) {
-            x = offsetX + box.x * scaleX;
-            y = offsetY + box.y * scaleY;
-            width = box.width * scaleX;
-            height = box.height * scaleY;
+        } else {
+            const bounds = getBoxBounds(box);
+            if (!bounds || !bounds.width || !bounds.height) return;
+            x = offsetX + bounds.x * scaleX;
+            y = offsetY + bounds.y * scaleY;
+            width = bounds.width * scaleX;
+            height = bounds.height * scaleY;
             const d = `M ${x} ${y} L ${x + width} ${y} L ${x + width} ${y + height} L ${x} ${y + height} Z`;
             path.setAttribute('d', d);
-        } else {
-            return;
         }
         
         const color = categoryColors[box.category] || '#4a69bd';
@@ -661,13 +692,14 @@ function renderBoxes() {
 }
 
 function appendResizeHandles(svg, box, index, offsetX, offsetY, scaleX, scaleY) {
+    const bounds = getBoxBounds(box);
     const points = box.points && box.points.length > 0
         ? box.points
         : [
-            [box.x, box.y],
-            [box.x + box.width, box.y],
-            [box.x + box.width, box.y + box.height],
-            [box.x, box.y + box.height]
+            [bounds.x, bounds.y],
+            [bounds.x + bounds.width, bounds.y],
+            [bounds.x + bounds.width, bounds.y + bounds.height],
+            [bounds.x, bounds.y + bounds.height]
         ];
 
     points.forEach((point, pointIndex) => {
@@ -764,10 +796,14 @@ function beginBoxResize(e, index, pointIndex) {
 function syncBoxBoundsFromPoints(box) {
     const xs = box.points.map(point => point[0]);
     const ys = box.points.map(point => point[1]);
-    box.x = Math.min(...xs);
-    box.y = Math.min(...ys);
-    box.width = Math.max(...xs) - box.x;
-    box.height = Math.max(...ys) - box.y;
+    const x = Math.min(...xs);
+    const y = Math.min(...ys);
+    setBoxBounds(box, {
+        x,
+        y,
+        width: Math.max(...xs) - x,
+        height: Math.max(...ys) - y
+    });
 }
 
 async function selectBox(index) {
@@ -821,13 +857,12 @@ function updateDetailsMode(box) {
     const isTable = box.category === 'table';
     const panel = document.getElementById('rightPanel');
     panel.classList.toggle('table-mode', isTable);
-    document.getElementById('boxPreviewSection').style.display = isTable ? 'none' : 'block';
+    document.getElementById('boxPreviewSection').style.display = 'block';
     document.getElementById('contentEditorSection').style.display = isTable ? 'none' : 'block';
     document.getElementById('renderResultSection').style.display = isTable ? 'none' : 'block';
     document.getElementById('tableEditorSection').style.display = isTable ? 'block' : 'none';
 
     if (isTable) {
-        updateTableBoxPreview(box);
         loadTableEditor(box.content || '');
         setTimeout(() => tableEditor.render(), 350);
     }
@@ -954,18 +989,6 @@ function unmergeTableCells() {
     tableEditor.render();
 }
 
-function updateTableBoxPreview(box) {
-    const source = document.getElementById('documentImage');
-    const canvas = document.getElementById('tableBoxPreview');
-    const ctx = canvas.getContext('2d');
-    const bounds = getBoxBounds(box);
-    const width = Math.min(700, Math.max(1, bounds.width));
-    const height = Math.min(160, Math.max(1, bounds.height / bounds.width * width));
-    canvas.width = width;
-    canvas.height = height;
-    ctx.drawImage(source, bounds.x, bounds.y, bounds.width, bounds.height, 0, 0, width, height);
-}
-
 function getBoxBounds(box) {
     if (box.points && box.points.length > 0) {
         const xs = box.points.map(point => point[0]);
@@ -974,7 +997,35 @@ function getBoxBounds(box) {
         const y = Math.min(...ys);
         return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
     }
-    return { x: box.x, y: box.y, width: box.width, height: box.height };
+    if (Array.isArray(box.block_bbox) && box.block_bbox.length >= 4) {
+        const [x1, y1, x2, y2] = box.block_bbox.map(Number);
+        if ([x1, y1, x2, y2].every(Number.isFinite)) {
+            return {
+                x: Math.min(x1, x2),
+                y: Math.min(y1, y2),
+                width: Math.abs(x2 - x1),
+                height: Math.abs(y2 - y1)
+            };
+        }
+    }
+    if ([box.x, box.y, box.width, box.height].every(value => Number.isFinite(Number(value)))) {
+        return {
+            x: Number(box.x),
+            y: Number(box.y),
+            width: Number(box.width),
+            height: Number(box.height)
+        };
+    }
+    return null;
+}
+
+function setBoxBounds(box, bounds) {
+    box.block_bbox = [
+        bounds.x,
+        bounds.y,
+        bounds.x + bounds.width,
+        bounds.y + bounds.height
+    ];
 }
 
 function updateBoxPreview(box) {
@@ -991,23 +1042,7 @@ function updateBoxPreview(box) {
     const scaleX = img.naturalWidth / rect.width;
     const scaleY = img.naturalHeight / rect.height;
     
-    let x, y, width, height;
-    
-    if (box.points && box.points.length > 0) {
-        const minX = Math.min(...box.points.map(p => p[0]));
-        const minY = Math.min(...box.points.map(p => p[1]));
-        const maxX = Math.max(...box.points.map(p => p[0]));
-        const maxY = Math.max(...box.points.map(p => p[1]));
-        x = minX;
-        y = minY;
-        width = maxX - minX;
-        height = maxY - minY;
-    } else {
-        x = box.x;
-        y = box.y;
-        width = box.width;
-        height = box.height;
-    }
+    const { x, y, width, height } = getBoxBounds(box);
     
     const previewWidth = 360;
     const previewHeight = Math.min(150, (height / width) * previewWidth);
@@ -1025,11 +1060,12 @@ function updateBoxPreview(box) {
 function updateCharCount() {
     const textarea = document.getElementById('contentTextarea');
     const count = textarea.value.length;
-    document.getElementById('charCount').textContent = `${count} / 500`;
+    const maxLength = 2000;
+    document.getElementById('charCount').textContent = `${count} / ${maxLength}`;
     
-    if (count > 500) {
-        textarea.value = textarea.value.substring(0, 500);
-        document.getElementById('charCount').textContent = '500 / 500';
+    if (count > maxLength) {
+        textarea.value = textarea.value.substring(0, maxLength);
+        document.getElementById('charCount').textContent = `${maxLength} / ${maxLength}`;
     }
 }
 
@@ -1094,15 +1130,28 @@ function renderContentPreview() {
     
     switch(category) {
         case 'formula':
-            renderContainer.innerHTML = `
-                <div style="font-size: 16px; text-align: center; padding: 20px;">
-                    \(\displaystyle ${content}\)
-                </div>
-            `;
-            if (window.MathJax) {
-                MathJax.typeset();
+        case 'display_formula':
+        case 'inline_formula': {
+            const latex = content.trim()
+                .replace(/^\$\$|\$\$$/g, '')
+                .replace(/^\$|\$$/g, '')
+                .replace(/^\\\[|\\\]$/g, '')
+                .replace(/^\\\(|\\\)$/g, '')
+                .trim();
+            const formula = document.createElement('div');
+            formula.style.cssText = 'font-size:16px;text-align:center;padding:20px;';
+            formula.textContent = category === 'inline_formula'
+                ? `\\(${latex}\\)`
+                : `\\[${latex}\\]`;
+            renderContainer.replaceChildren(formula);
+            if (window.MathJax?.typesetPromise) {
+                MathJax.typesetClear?.([renderContainer]);
+                MathJax.typesetPromise([renderContainer]).catch(error => {
+                    console.error('MathJax render failed:', error);
+                });
             }
             break;
+        }
         case 'table':
             renderContainer.innerHTML = content;
             break;
@@ -1195,7 +1244,12 @@ function onImageMouseUp(e) {
 
     if (draftBox && draftBox.width > 5 && draftBox.height > 5) {
         const newBox = {
-            ...draftBox,
+            block_bbox: [
+                draftBox.x,
+                draftBox.y,
+                draftBox.x + draftBox.width,
+                draftBox.y + draftBox.height
+            ],
             category: 'text',
             content: '',
             block_id: getNextBlockId()
@@ -1235,8 +1289,12 @@ function updateBoxInteraction(point) {
             box.points = original.points.map(item => [item[0] + limitedDx, item[1] + limitedDy]);
             syncBoxBoundsFromPoints(box);
         } else {
-            box.x = Math.max(0, Math.min(img.naturalWidth - original.width, original.x + dx));
-            box.y = Math.max(0, Math.min(img.naturalHeight - original.height, original.y + dy));
+            const originalBounds = getBoxBounds(original);
+            setBoxBounds(box, {
+                ...originalBounds,
+                x: Math.max(0, Math.min(img.naturalWidth - originalBounds.width, originalBounds.x + dx)),
+                y: Math.max(0, Math.min(img.naturalHeight - originalBounds.height, originalBounds.y + dy))
+            });
         }
     } else if (original.points && original.points.length > 0) {
         box.points = original.points.map(item => [...item]);
@@ -1251,11 +1309,12 @@ function updateBoxInteraction(point) {
 }
 
 function resizeRectangle(box, original, pointIndex, point) {
+    const bounds = getBoxBounds(original);
     const oppositePoints = [
-        [original.x + original.width, original.y + original.height],
-        [original.x, original.y + original.height],
-        [original.x, original.y],
-        [original.x + original.width, original.y]
+        [bounds.x + bounds.width, bounds.y + bounds.height],
+        [bounds.x, bounds.y + bounds.height],
+        [bounds.x, bounds.y],
+        [bounds.x + bounds.width, bounds.y]
     ];
     const opposite = oppositePoints[pointIndex];
     const minSize = 2;
@@ -1266,10 +1325,7 @@ function resizeRectangle(box, original, pointIndex, point) {
 
     if (width < minSize) width = minSize;
     if (height < minSize) height = minSize;
-    box.x = x;
-    box.y = y;
-    box.width = width;
-    box.height = height;
+    setBoxBounds(box, { x, y, width, height });
 }
 
 function onImageDoubleClick(e) {
@@ -1311,7 +1367,72 @@ function finishPolygon() {
 function onDocumentKeydown(e) {
     if (e.key === 'Escape' && (isDrawing || polygonPoints.length > 0 || boxInteraction)) {
         cancelDrawing();
+        return;
     }
+
+    if (e.defaultPrevented || e.repeat || e.ctrlKey || e.metaKey || e.altKey ||
+        isShortcutInput(e.target) || isModalOpen()) return;
+
+    const focusedPanel = e.target instanceof Element
+        ? e.target.closest('#leftPanel, #rightPanel')
+        : null;
+    if (focusedPanel) {
+        activeShortcutPanel = focusedPanel.id === 'rightPanel' ? 'right' : 'left';
+    }
+
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        if (activeShortcutPanel === 'right') {
+            if (e.key === 'ArrowLeft') prevBox();
+            else nextBox();
+        } else {
+            if (e.key === 'ArrowLeft') prevImage();
+            else nextImage();
+        }
+        return;
+    }
+
+    switch (e.key.toLowerCase()) {
+        case 'a':
+            e.preventDefault();
+            setTool(currentTool === 'polygon' ? 'polygon' : 'rectBox');
+            break;
+        case 'd':
+            if (selectedBoxIndex < 0) return;
+            e.preventDefault();
+            deleteSelectedBox();
+            break;
+        case 's':
+            e.preventDefault();
+            toggleLabels();
+            break;
+        case 'w':
+            e.preventDefault();
+            toggleInvalidOnly();
+            break;
+    }
+}
+
+function isShortcutInput(target) {
+    if (!(target instanceof Element)) return false;
+    return Boolean(target.closest(
+        'input, textarea, select, [contenteditable="true"], .handsontable'
+    ));
+}
+
+function isModalOpen() {
+    return getComputedStyle(document.getElementById('directoryModal')).display !== 'none';
+}
+
+function showShortcutHelp() {
+    alert([
+        '快捷键',
+        '← / →：左栏切换图片，右栏切换框',
+        'A：进入新增框模式（默认矩形，已选多边形时保持多边形）',
+        'D：删除当前选中的框',
+        'S：显示/隐藏标签',
+        'W：仅显示无效框/显示全部框'
+    ].join('\n'));
 }
 
 function deleteSelectedBox() {

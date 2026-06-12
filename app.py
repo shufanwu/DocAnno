@@ -78,6 +78,18 @@ def get_invalid_image_indices():
 def convert_to_new_format(data):
     """将旧格式标签数据转换为新格式"""
     if isinstance(data, dict) and 'boxes' in data:
+        for box in data.get('boxes', []):
+            if not isinstance(box, dict) or box.get('block_bbox'):
+                continue
+            points = box.get('points') or []
+            if points:
+                xs = [point[0] for point in points]
+                ys = [point[1] for point in points]
+                box['block_bbox'] = [min(xs), min(ys), max(xs), max(ys)]
+            elif all(key in box for key in ('x', 'y', 'width', 'height')):
+                x = box['x']
+                y = box['y']
+                box['block_bbox'] = [x, y, x + box['width'], y + box['height']]
         return data
     
     boxes = []
@@ -94,6 +106,7 @@ def convert_to_new_format(data):
                     'y': y,
                     'width': width if width > 0 else 100,
                     'height': height if height > 0 else 50,
+                    'block_bbox': [x, y, bbox[2], bbox[3]],
                     'category': item.get('block_label', 'text'),
                     'content': item.get('block_content', ''),
                     'block_order': item.get('block_order'),
