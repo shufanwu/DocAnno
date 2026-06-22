@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>文档解析标注工具</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/handsontable.full.min.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=20260612-1">
-    <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=20260612-3">
+    <script src="{{ url_for('static', filename='vendor/mathjax/es5/tex-mml-chtml.js') }}"></script>
 </head>
 <body>
     <nav class="navbar">
@@ -32,7 +32,10 @@
                 <button id="invalidImagesOnlyBtn" class="nav-filter-btn" title="仅显示含无效框的图片">仅无效图片</button>
                 <button id="firstImageBtn" class="nav-btn" disabled>⏮️</button>
                 <button id="prevImageBtn" class="nav-btn" disabled>⬅️</button>
-                <span id="imageCounter" class="counter">0 / 0</span>
+                <span class="image-index-control">
+                    <input id="imageIndexInput" class="image-index-input" type="number" min="1" value="0" disabled aria-label="图片序号">
+                    <span id="imageCounter" class="counter">/ 0</span>
+                </span>
                 <button id="nextImageBtn" class="nav-btn" disabled>➡️</button>
                 <button id="lastImageBtn" class="nav-btn" disabled>⏭️</button>
             </div>
@@ -67,6 +70,10 @@
                     <button id="deleteBoxBtn" class="tool-btn" title="删除框">
                         <span class="tool-icon">🗑️</span>
                         <span class="tool-label">删除框</span>
+                    </button>
+                    <button id="toolbarSaveBtn" class="tool-btn" title="保存修改">
+                        <span class="tool-icon">💾</span>
+                        <span class="tool-label">保存修改</span>
                     </button>
                     <button id="undoBtn" class="tool-btn" title="撤销" disabled>
                         <span class="tool-icon">↩️</span>
@@ -163,6 +170,14 @@
                             <option value="paragraph_title">paragraph_title</option>
                         </select>
                     </div>
+
+                    <div class="detail-section">
+                        <label class="section-label" for="blurSelect">是否模糊</label>
+                        <select id="blurSelect" class="category-select">
+                            <option value="false">否</option>
+                            <option value="true">是</option>
+                        </select>
+                    </div>
                     
                     <div class="detail-section" id="contentEditorSection">
                         <label class="section-label">文本内容</label>
@@ -222,6 +237,6 @@
     </div>
 
     <script src="{{ url_for('static', filename='js/handsontable.full.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/app.js') }}?v=20260612-2"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}?v=20260622-3"></script>
 </body>
 </html>

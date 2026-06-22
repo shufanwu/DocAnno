@@ -78,8 +78,10 @@ def get_invalid_image_indices():
 def convert_to_new_format(data):
     """将旧格式标签数据转换为新格式"""
     if isinstance(data, dict) and 'boxes' in data:
-        for box in data.get('boxes', []):
+        for index, box in enumerate(data.get('boxes', [])):
             if not isinstance(box, dict) or box.get('block_bbox'):
+                if isinstance(box, dict):
+                    box['_source_index'] = index
                 continue
             points = box.get('points') or []
             if points:
@@ -90,11 +92,12 @@ def convert_to_new_format(data):
                 x = box['x']
                 y = box['y']
                 box['block_bbox'] = [x, y, x + box['width'], y + box['height']]
+            box['_source_index'] = index
         return data
     
     boxes = []
     if 'parsing_res_list' in data and isinstance(data['parsing_res_list'], list):
-        for item in data['parsing_res_list']:
+        for source_index, item in enumerate(data['parsing_res_list']):
             if isinstance(item, dict):
                 bbox = item.get('block_bbox', [0, 0, 100, 50])
                 x = bbox[0]
@@ -112,7 +115,9 @@ def convert_to_new_format(data):
                     'block_order': item.get('block_order'),
                     'points': item.get('block_polygon_points', []),
                     'block_id': item.get('block_id', -1),
-                    'block_valid': item.get('block_valid', True)
+                    'block_valid': item.get('block_valid', True),
+                    'is_blur': item.get('is_blur', False),
+                    '_source_index': source_index
                 }
                 boxes.append(box)
     else:
@@ -128,8 +133,10 @@ def convert_to_new_format(data):
                     'block_order': value.get('block_order', value.get('readingOrder')),
                     'block_id': value.get('block_id'),
                     'block_valid': value.get('block_valid', True),
+                    'is_blur': value.get('is_blur', False),
                     'score_list': value.get('score_list', []),
-                    'match_idx': value.get('match_idx', -1)
+                    'match_idx': value.get('match_idx', -1),
+                    '_source_key': key
                 }
                 boxes.append(box)
     
@@ -148,12 +155,63 @@ def save_label(label_data):
     
     try:
         os.makedirs(os.path.dirname(label_path), exist_ok=True)
+        if os.path.exists(label_path):
+            with open(label_path, 'r', encoding='utf-8') as f:
+                original_data = json.load(f)
+        else:
+            original_data = {'parsing_res_list': []}
+
+        merged_data = merge_label_data(original_data, label_data or {'boxes': []})
         with open(label_path, 'w', encoding='utf-8') as f:
-            json.dump(label_data, f, ensure_ascii=False, indent=2)
+            json.dump(merged_data, f, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
         print(f"Save label error: {e}")
         return False
+
+
+def merge_label_data(original_data, label_data):
+    boxes = label_data.get('boxes', []) if isinstance(label_data, dict) else []
+
+    if not isinstance(original_data, dict) or not isinstance(original_data.get('parsing_res_list'), list):
+        raise ValueError('Original label file has no parsing_res_list')
+
+    original_items = original_data['parsing_res_list']
+    merged_items = []
+    for box in boxes:
+        source_index = box.get('_source_index')
+        is_existing = isinstance(source_index, int) and 0 <= source_index < len(original_items)
+        item = dict(original_items[source_index]) if is_existing else {}
+
+        item['block_label'] = box.get('category', item.get('block_label', 'text'))
+        item['block_content'] = box.get('content', item.get('block_content', ''))
+        item['block_bbox'] = box.get('block_bbox', item.get('block_bbox', [0, 0, 0, 0]))
+        item['block_id'] = box.get('block_id', item.get('block_id', -1))
+
+        block_order = box.get('block_order')
+        if not is_existing or 'block_order' in item or block_order is not None:
+            item['block_order'] = block_order
+
+        block_valid = box.get('block_valid', True)
+        if not is_existing or 'block_valid' in item or block_valid is not True:
+            item['block_valid'] = block_valid
+
+        is_blur = box.get('is_blur', False)
+        if not is_existing or 'is_blur' in item or is_blur is True:
+            item['is_blur'] = is_blur
+
+        merged_items.append(item)
+
+    merged_items.sort(key=get_block_id_sort_key)
+    original_data['parsing_res_list'] = merged_items
+    return original_data
+
+
+def get_block_id_sort_key(item):
+    try:
+        return (0, float(item.get('block_id')))
+    except (TypeError, ValueError):
+        return (1, 0)
 
 
 @app.route('/')

@@ -79,6 +79,7 @@ function initEventListeners() {
     document.getElementById('toggleLabelsBtn').addEventListener('click', toggleLabels);
     document.getElementById('invalidOnlyBtn').addEventListener('click', toggleInvalidOnly);
     document.getElementById('deleteBoxBtn').addEventListener('click', deleteSelectedBox);
+    document.getElementById('toolbarSaveBtn').addEventListener('click', saveChanges);
     document.getElementById('undoBtn').addEventListener('click', undo);
     document.getElementById('redoBtn').addEventListener('click', redo);
     document.getElementById('zoomInBtn').addEventListener('click', () => zoom(10));
@@ -88,6 +89,8 @@ function initEventListeners() {
     document.getElementById('prevImageBtn').addEventListener('click', prevImage);
     document.getElementById('nextImageBtn').addEventListener('click', nextImage);
     document.getElementById('lastImageBtn').addEventListener('click', lastImage);
+    document.getElementById('imageIndexInput').addEventListener('keydown', onImageIndexKeydown);
+    document.getElementById('imageIndexInput').addEventListener('blur', resetImageIndexInput);
     document.getElementById('invalidImagesOnlyBtn').addEventListener('click', toggleInvalidImagesOnly);
     document.getElementById('prevBoxBtn').addEventListener('click', prevBox);
     document.getElementById('nextBoxBtn').addEventListener('click', nextBox);
@@ -96,6 +99,7 @@ function initEventListeners() {
     document.getElementById('copyContentBtn').addEventListener('click', copyContent);
     document.getElementById('saveChangesBtn').addEventListener('click', saveChanges);
     document.getElementById('categorySelect').addEventListener('change', onCategoryChange);
+    document.getElementById('blurSelect').addEventListener('change', onBlurChange);
     document.getElementById('blockIdInput').addEventListener('change', onBlockIdChange);
     document.getElementById('mergeTableCellsBtn').addEventListener('click', mergeTableCells);
     document.getElementById('unmergeTableCellsBtn').addEventListener('click', unmergeTableCells);
@@ -504,7 +508,31 @@ function updateCounters(current, total) {
     totalImages = total;
     const indices = getNavigableImageIndices();
     const position = indices.indexOf(current);
-    document.getElementById('imageCounter').textContent = `${position >= 0 ? position + 1 : 0} / ${indices.length}`;
+    const input = document.getElementById('imageIndexInput');
+    input.value = position >= 0 ? position + 1 : 0;
+    input.max = Math.max(1, indices.length);
+    input.disabled = indices.length === 0;
+    document.getElementById('imageCounter').textContent = `/ ${indices.length}`;
+}
+
+function onImageIndexKeydown(e) {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const indices = getNavigableImageIndices();
+    const requestedPosition = Number.parseInt(e.target.value, 10);
+    if (requestedPosition < 1 || requestedPosition > indices.length) {
+        resetImageIndexInput();
+        return;
+    }
+    e.target.blur();
+    const targetIndex = indices[requestedPosition - 1];
+    if (targetIndex !== currentIndex) gotoImage(targetIndex);
+}
+
+function resetImageIndexInput() {
+    const indices = getNavigableImageIndices();
+    const position = indices.indexOf(currentIndex);
+    document.getElementById('imageIndexInput').value = position >= 0 ? position + 1 : 0;
 }
 
 function updateNavigationButtons(current) {
@@ -606,37 +634,14 @@ function renderBoxes() {
         
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         
-        let x, y, width, height;
-        
-        if (box.points && box.points.length > 0) {
-            const scaledPoints = box.points.map(p => ({
-                x: offsetX + p[0] * scaleX,
-                y: offsetY + p[1] * scaleY
-            }));
-            
-            const d = scaledPoints.map((p, i) => 
-                (i === 0 ? 'M' : 'L') + p.x + ',' + p.y
-            ).join(' ') + ' Z';
-            path.setAttribute('d', d);
-            
-            const minX = Math.min(...scaledPoints.map(p => p.x));
-            const minY = Math.min(...scaledPoints.map(p => p.y));
-            const maxX = Math.max(...scaledPoints.map(p => p.x));
-            const maxY = Math.max(...scaledPoints.map(p => p.y));
-            x = minX;
-            y = minY;
-            width = maxX - minX;
-            height = maxY - minY;
-        } else {
-            const bounds = getBoxBounds(box);
-            if (!bounds || !bounds.width || !bounds.height) return;
-            x = offsetX + bounds.x * scaleX;
-            y = offsetY + bounds.y * scaleY;
-            width = bounds.width * scaleX;
-            height = bounds.height * scaleY;
-            const d = `M ${x} ${y} L ${x + width} ${y} L ${x + width} ${y + height} L ${x} ${y + height} Z`;
-            path.setAttribute('d', d);
-        }
+        const bounds = getBoxBounds(box);
+        if (!bounds || !bounds.width || !bounds.height) return;
+        const x = offsetX + bounds.x * scaleX;
+        const y = offsetY + bounds.y * scaleY;
+        const width = bounds.width * scaleX;
+        const height = bounds.height * scaleY;
+        const d = `M ${x} ${y} L ${x + width} ${y} L ${x + width} ${y + height} L ${x} ${y + height} Z`;
+        path.setAttribute('d', d);
         
         const color = categoryColors[box.category] || '#4a69bd';
         path.setAttribute('fill', color + '33');
@@ -693,14 +698,12 @@ function renderBoxes() {
 
 function appendResizeHandles(svg, box, index, offsetX, offsetY, scaleX, scaleY) {
     const bounds = getBoxBounds(box);
-    const points = box.points && box.points.length > 0
-        ? box.points
-        : [
-            [bounds.x, bounds.y],
-            [bounds.x + bounds.width, bounds.y],
-            [bounds.x + bounds.width, bounds.y + bounds.height],
-            [bounds.x, bounds.y + bounds.height]
-        ];
+    const points = [
+        [bounds.x, bounds.y],
+        [bounds.x + bounds.width, bounds.y],
+        [bounds.x + bounds.width, bounds.y + bounds.height],
+        [bounds.x, bounds.y + bounds.height]
+    ];
 
     points.forEach((point, pointIndex) => {
         const handle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
@@ -793,19 +796,6 @@ function beginBoxResize(e, index, pointIndex) {
     };
 }
 
-function syncBoxBoundsFromPoints(box) {
-    const xs = box.points.map(point => point[0]);
-    const ys = box.points.map(point => point[1]);
-    const x = Math.min(...xs);
-    const y = Math.min(...ys);
-    setBoxBounds(box, {
-        x,
-        y,
-        width: Math.max(...xs) - x,
-        height: Math.max(...ys) - y
-    });
-}
-
 async function selectBox(index) {
     if (selectedBoxIndex >= 0 && selectedBoxIndex !== index) {
         const synced = await syncTableEditorContent();
@@ -845,6 +835,7 @@ function updateBoxDetails(index) {
     document.getElementById('boxDetails').style.display = 'block';
     
     document.getElementById('categorySelect').value = box.category || 'text';
+    document.getElementById('blurSelect').value = box.is_blur === true ? 'true' : 'false';
     document.getElementById('blockIdInput').value = getBoxId(box) ?? '';
     document.getElementById('contentTextarea').value = box.content || '';
     updateCharCount();
@@ -990,13 +981,6 @@ function unmergeTableCells() {
 }
 
 function getBoxBounds(box) {
-    if (box.points && box.points.length > 0) {
-        const xs = box.points.map(point => point[0]);
-        const ys = box.points.map(point => point[1]);
-        const x = Math.min(...xs);
-        const y = Math.min(...ys);
-        return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
-    }
     if (Array.isArray(box.block_bbox) && box.block_bbox.length >= 4) {
         const [x1, y1, x2, y2] = box.block_bbox.map(Number);
         if ([x1, y1, x2, y2].every(Number.isFinite)) {
@@ -1033,27 +1017,27 @@ function updateBoxPreview(box) {
     const ctx = canvas.getContext('2d');
     const img = document.getElementById('documentImage');
     
-    if (!img.complete) {
+    if (!img.complete || !img.naturalWidth || !img.naturalHeight) {
         setTimeout(() => updateBoxPreview(box), 100);
         return;
     }
-    
-    const rect = img.getBoundingClientRect();
-    const scaleX = img.naturalWidth / rect.width;
-    const scaleY = img.naturalHeight / rect.height;
-    
+
     const { x, y, width, height } = getBoxBounds(box);
-    
-    const previewWidth = 360;
-    const previewHeight = Math.min(150, (height / width) * previewWidth);
-    
-    canvas.width = previewWidth;
-    canvas.height = previewHeight;
-    
+
+    const sourceX = Math.max(0, Math.floor(x));
+    const sourceY = Math.max(0, Math.floor(y));
+    const sourceRight = Math.min(img.naturalWidth, Math.ceil(x + width));
+    const sourceBottom = Math.min(img.naturalHeight, Math.ceil(y + height));
+    const cropWidth = Math.max(1, sourceRight - sourceX);
+    const cropHeight = Math.max(1, sourceBottom - sourceY);
+
+    canvas.width = cropWidth;
+    canvas.height = cropHeight;
+    ctx.imageSmoothingEnabled = false;
     ctx.drawImage(
         img,
-        x, y, width, height,
-        0, 0, previewWidth, previewHeight
+        sourceX, sourceY, cropWidth, cropHeight,
+        0, 0, cropWidth, cropHeight
     );
 }
 
@@ -1100,6 +1084,12 @@ function onBlockIdChange() {
     saveToHistory();
     input.value = moveBlockId(selectedBoxIndex, requestedId);
     renderBoxes();
+}
+
+function onBlurChange() {
+    if (selectedBoxIndex < 0) return;
+    saveToHistory();
+    labelData.boxes[selectedBoxIndex].is_blur = document.getElementById('blurSelect').value === 'true';
 }
 
 function onContentChange() {
@@ -1281,25 +1271,12 @@ function updateBoxInteraction(point) {
     if (!interaction.changed && Math.hypot(dx, dy) < 2) return;
 
     if (interaction.type === 'move') {
-        if (original.points && original.points.length > 0) {
-            const xs = original.points.map(item => item[0]);
-            const ys = original.points.map(item => item[1]);
-            const limitedDx = Math.max(-Math.min(...xs), Math.min(img.naturalWidth - Math.max(...xs), dx));
-            const limitedDy = Math.max(-Math.min(...ys), Math.min(img.naturalHeight - Math.max(...ys), dy));
-            box.points = original.points.map(item => [item[0] + limitedDx, item[1] + limitedDy]);
-            syncBoxBoundsFromPoints(box);
-        } else {
-            const originalBounds = getBoxBounds(original);
-            setBoxBounds(box, {
-                ...originalBounds,
-                x: Math.max(0, Math.min(img.naturalWidth - originalBounds.width, originalBounds.x + dx)),
-                y: Math.max(0, Math.min(img.naturalHeight - originalBounds.height, originalBounds.y + dy))
-            });
-        }
-    } else if (original.points && original.points.length > 0) {
-        box.points = original.points.map(item => [...item]);
-        box.points[interaction.pointIndex] = point;
-        syncBoxBoundsFromPoints(box);
+        const originalBounds = getBoxBounds(original);
+        setBoxBounds(box, {
+            ...originalBounds,
+            x: Math.max(0, Math.min(img.naturalWidth - originalBounds.width, originalBounds.x + dx)),
+            y: Math.max(0, Math.min(img.naturalHeight - originalBounds.height, originalBounds.y + dy))
+        });
     } else {
         resizeRectangle(box, original, interaction.pointIndex, point);
     }
@@ -1346,13 +1323,14 @@ function onImageDoubleClick(e) {
 function finishPolygon() {
     if (polygonPoints.length < 3) return;
 
+    const xs = polygonPoints.map(point => point[0]);
+    const ys = polygonPoints.map(point => point[1]);
     const newBox = {
-        points: polygonPoints.map(point => [...point]),
+        block_bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)],
         category: 'text',
         content: '',
         block_id: getNextBlockId()
     };
-    syncBoxBoundsFromPoints(newBox);
     labelData.boxes.push(newBox);
     selectedBoxIndex = labelData.boxes.length - 1;
     polygonPoints = [];
@@ -1435,7 +1413,7 @@ function showShortcutHelp() {
     ].join('\n'));
 }
 
-function deleteSelectedBox() {
+async function deleteSelectedBox() {
     if (selectedBoxIndex < 0 || selectedBoxIndex >= labelData.boxes.length) {
         alert('请先选择一个框');
         return;
@@ -1443,6 +1421,10 @@ function deleteSelectedBox() {
     
     if (!confirm('确定要删除这个框吗？')) return;
     
+    const previousBoxes = JSON.parse(JSON.stringify(labelData.boxes));
+    const previousSelectedIndex = selectedBoxIndex;
+    const previousHistory = [...history];
+    const previousHistoryIndex = historyIndex;
     const visibleIndicesBefore = getVisibleBoxIndices();
     const visiblePosition = visibleIndicesBefore.indexOf(selectedBoxIndex);
     const deletedIndex = selectedBoxIndex;
@@ -1464,6 +1446,38 @@ function deleteSelectedBox() {
         updateBoxDetails(selectedBoxIndex);
     } else {
         closePanel();
+    }
+
+    try {
+        await persistLabelData();
+        const selectedBox = selectedBoxIndex >= 0 ? labelData.boxes[selectedBoxIndex] : null;
+        labelData.boxes.sort(compareBoxesByBlockId);
+        selectedBoxIndex = selectedBox ? labelData.boxes.indexOf(selectedBox) : -1;
+        labelData.boxes.forEach((box, index) => {
+            box._source_index = index;
+        });
+        renderBoxes();
+        updateBoxCounter();
+        if (selectedBoxIndex >= 0) {
+            updateBoxDetails(selectedBoxIndex);
+        }
+        refreshImageStatuses().then(() => handleImageListAfterSave());
+    } catch (error) {
+        labelData.boxes = previousBoxes;
+        selectedBoxIndex = previousSelectedIndex;
+        history = previousHistory;
+        historyIndex = previousHistoryIndex;
+        updateUndoRedoButtons();
+        renderBoxes();
+        updateBoxCounter();
+        if (selectedBoxIndex >= 0) {
+            showPanel();
+            updateBoxDetails(selectedBoxIndex);
+        } else {
+            closePanel();
+        }
+        console.error('Error:', error);
+        alert('删除保存失败，已恢复删除前状态');
     }
 }
 
@@ -1614,6 +1628,13 @@ async function saveChanges() {
         
         
         alert('保存成功');
+        labelData.boxes.sort(compareBoxesByBlockId);
+        selectedBoxIndex = savedBox ? labelData.boxes.indexOf(savedBox) : -1;
+        labelData.boxes.forEach((box, index) => {
+            box._source_index = index;
+        });
+        renderBoxes();
+        updateBoxCounter();
         updateImageValidityIndicator();
         refreshImageStatuses().then(() => handleImageListAfterSave());
     })
@@ -1622,6 +1643,28 @@ async function saveChanges() {
         console.error('Error:', error);
         alert('保存失败');
     });
+}
+
+function compareBoxesByBlockId(left, right) {
+    const leftId = Number(left.block_id);
+    const rightId = Number(right.block_id);
+    const leftValid = left.block_id !== null && left.block_id !== '' && Number.isFinite(leftId);
+    const rightValid = right.block_id !== null && right.block_id !== '' && Number.isFinite(rightId);
+    if (leftValid && rightValid) return leftId - rightId;
+    if (leftValid) return -1;
+    if (rightValid) return 1;
+    return 0;
+}
+
+async function persistLabelData() {
+    const response = await fetch(`${API_BASE}/save_label`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ labelData: labelData })
+    });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    return data;
 }
 
 function handleImageListAfterSave() {
